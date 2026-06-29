@@ -14,10 +14,11 @@ hours after a clock change.)
 
 ## Activation options (pick one)
 
-### A) Vercel Cron (after deploying) — simplest if on Pro
-`web/vercel.json` already declares the schedule. Vercel automatically sends the `CRON_SECRET` as a
-Bearer token. **Caveat:** the **Hobby** plan only runs cron **once per day** — every-2-hours needs
-**Pro**, or use option B.
+### A) Vercel Cron (after deploying) — once/day backup
+**Hobby plan caps cron at once per day** (a sub-daily schedule fails to deploy). So `web/vercel.json`
+is set to a single daily run (`0 5 * * *` = 08:00 Jerusalem) — a free backup. Vercel automatically
+sends the `CRON_SECRET` as a Bearer token. For the actual every-2-hours cadence, use option B
+(or upgrade to Pro and restore the multi-hour schedule).
 
 ### B) Free external scheduler hitting the deployed URL — free + every 2h
 Deploy to Vercel (free Hobby for hosting), then have a free scheduler call the endpoint:
