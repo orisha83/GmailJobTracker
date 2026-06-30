@@ -100,6 +100,23 @@ function within1Edit(a: string, b: string): boolean {
   if (i < la || j < lb) edits++;
   return edits <= 1;
 }
+// Two company keys are the same company if they differ by ≤1 edit (spelling
+// variant) or one contains the other (e.g. "papaya" ⊂ "papayaglobal"). The
+// length floor keeps short, distinct names from being merged.
+function sameCompany(a: string, b: string): boolean {
+  if (a === "unknown" || b === "unknown") return false;
+  if (within1Edit(a, b)) return true;
+  if (a.length >= 5 && b.length >= 5 && (a.includes(b) || b.includes(a))) return true;
+  return false;
+}
+// Role word-set, used to fold a generic role into a more specific one
+// ("Product Manager" ⊂ "Product Manager, Payments").
+const roleTokens = (role: string) => new Set(norm(role).split(/[^a-z0-9]+/).filter(Boolean));
+const isSubset = (a: Set<string>, b: Set<string>) => {
+  if (a.size === 0 || a.size > b.size) return false;
+  for (const t of a) if (!b.has(t)) return false;
+  return true;
+};
 const TERMINAL = new Set(["rejection", "offer", "rejected", "withdrawn", "archived"]);
 const isTerminal = (p: { category: string; status: string }) =>
   TERMINAL.has(norm(p.category)) || TERMINAL.has(norm(p.status));
@@ -191,9 +208,9 @@ function buildPositions(jobs: Job[]): Position[] {
   const merged = new Map<string, Job[]>();
   for (const [key, group] of ordered) {
     let canonical = key;
-    if (key.length >= 6 && key !== "unknown") {
+    if (key !== "unknown") {
       for (const existing of merged.keys()) {
-        if (existing.length >= 6 && within1Edit(existing, key)) {
+        if (sameCompany(existing, key)) {
           canonical = existing;
           break;
         }
@@ -207,20 +224,38 @@ function buildPositions(jobs: Job[]): Position[] {
   const positions: Position[] = [];
   for (const group of merged.values()) {
     const companyName = bestCompanyName(group);
-    const realRoles = Array.from(
+
+    // Distinct real roles, most-specific (largest word-set) first, so a generic
+    // role ("Product Manager") folds into a specific one ("Product Manager,
+    // Payments") rather than splitting into its own card.
+    const distinct = Array.from(
       new Map(
         group.filter((j) => isRealRole(j.role)).map((j) => [norm(j.role), j.role.trim()]),
       ).values(),
-    );
+    ).sort((a, b) => roleTokens(b).size - roleTokens(a).size);
 
-    if (realRoles.length <= 1) {
-      positions.push(makePosition(companyName, realRoles[0] ?? "", group));
+    type Bucket = { role: string; tokens: Set<string>; jobs: Job[] };
+    const buckets: Bucket[] = [];
+    const labelToBucket = new Map<string, Bucket>();
+    for (const role of distinct) {
+      const tokens = roleTokens(role);
+      let bucket = buckets.find((b) => isSubset(tokens, b.tokens));
+      if (!bucket) {
+        bucket = { role, tokens, jobs: [] };
+        buckets.push(bucket);
+      }
+      labelToBucket.set(norm(role), bucket);
+    }
+
+    if (buckets.length <= 1) {
+      positions.push(makePosition(companyName, buckets[0]?.role ?? "", group));
       continue;
     }
-    const buckets = realRoles.map((role) => ({
-      role,
-      jobs: group.filter((j) => norm(j.role) === norm(role)),
-    }));
+
+    for (const j of group) {
+      if (isRealRole(j.role)) labelToBucket.get(norm(j.role))?.jobs.push(j);
+    }
+    // Fold placeholder-role emails (calendar invites, etc.) into the latest bucket.
     const unknown = group.filter((j) => !isRealRole(j.role));
     if (unknown.length) {
       let target = buckets[0];
