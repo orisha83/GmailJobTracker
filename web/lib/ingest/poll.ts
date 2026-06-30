@@ -18,16 +18,17 @@ import {
   setLastChecked,
   type NewJobRow,
 } from "@/lib/google/sheets";
-import { notifyNewOpportunity } from "@/lib/notify";
+import { notifyDigest, type AlertItem } from "@/lib/notify";
 import { config } from "@/lib/config";
-import type { Analysis, EmailAnalyzer } from "@/lib/ai/analyzer";
+import type { EmailAnalyzer } from "@/lib/ai/analyzer";
 import { getAnalyzer } from "@/lib/ai";
 
 export interface PollResult {
   scanned: number; // threads analyzed this run
   skipped: number; // already processed
   relevant: number; // logged
-  invitations: number; // relevant AND category === "Invitation" (alerted)
+  invitations: number; // relevant AND category === "Invitation"
+  offers: number; // relevant AND category === "Offer"
   irrelevant: number; // model said not job-related
   failed: number; // analyzer returned null (transient — retried next run)
   deferred: number; // left for the next run (per-run cap reached)
@@ -67,6 +68,7 @@ export async function runPoll(analyzer: EmailAnalyzer = getAnalyzer()): Promise<
     skipped: 0,
     relevant: 0,
     invitations: 0,
+    offers: 0,
     irrelevant: 0,
     failed: 0,
     deferred: 0,
@@ -80,7 +82,7 @@ export async function runPoll(analyzer: EmailAnalyzer = getAnalyzer()): Promise<
   // Batch writes + alerts; flush once at the end (Sheets write-quota friendly).
   const rowsToAppend: NewJobRow[] = [];
   const processedIds: string[] = [];
-  const alerts: { subject: string; analysis: Analysis }[] = [];
+  const alerts: AlertItem[] = [];
 
   for (const { threadId, latestMessageId } of threads) {
     if (processed.has(threadId)) {
@@ -107,6 +109,7 @@ export async function runPoll(analyzer: EmailAnalyzer = getAnalyzer()): Promise<
       emailDate: message.date,
       senderName: message.senderName,
       senderDomain: message.senderDomain,
+      links: message.links,
     });
     if (!analysis) {
       result.failed++;
@@ -114,10 +117,11 @@ export async function runPoll(analyzer: EmailAnalyzer = getAnalyzer()): Promise<
     }
 
     if (analysis.is_relevant) {
+      const companyKey = companyKeyFor(analysis.company, message.senderDomain);
       rowsToAppend.push({
         received: message.date,
         company: analysis.company,
-        companyKey: companyKeyFor(analysis.company, message.senderDomain),
+        companyKey,
         role: analysis.role,
         step: analysis.step,
         category: analysis.category,
@@ -126,10 +130,23 @@ export async function runPoll(analyzer: EmailAnalyzer = getAnalyzer()): Promise<
         status: analysis.step, // current status = this email's step (overridable)
         source: "ai",
         threadId,
+        link: analysis.apply_url ?? "",
       });
-      if (analysis.category === "Invitation") {
-        alerts.push({ subject: message.subject, analysis });
-        result.invitations++;
+      // Interviews and offers are action-worthy → bundle into the digest.
+      if (analysis.category === "Invitation" || analysis.category === "Offer") {
+        alerts.push({
+          company: analysis.company,
+          companyKey,
+          role: analysis.role,
+          step: analysis.step,
+          category: analysis.category,
+          interviewDateTime: analysis.interview_datetime ?? "",
+          summary: analysis.summary,
+          received: message.date,
+          threadId,
+        });
+        if (analysis.category === "Invitation") result.invitations++;
+        else result.offers++;
       }
       result.relevant++;
     } else {
@@ -142,7 +159,8 @@ export async function runPoll(analyzer: EmailAnalyzer = getAnalyzer()): Promise<
   // Flush rows first, then processed markers (never mark processed unsaved), then alerts.
   await appendRows(auth, rowsToAppend);
   await markProcessedBatch(auth, processedIds);
-  for (const a of alerts) await notifyNewOpportunity(auth, a.subject, a.analysis);
+  // One grouped digest, rate-limited to one email per window (holds overflow).
+  await notifyDigest(auth, alerts);
 
   // Advance the watermark only when fully caught up.
   if (result.deferred === 0 && result.failed === 0) {

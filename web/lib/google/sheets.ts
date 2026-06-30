@@ -43,9 +43,11 @@ export interface TrackedJob {
   source: string;
   /** Gmail thread ID — the dedup key (one conversation = one row). */
   threadId: string;
+  /** Best job/careers/position URL extracted from the email, or "". */
+  link: string;
 }
 
-// Column order A..K. Status=I, ThreadID=K.
+// Column order A..L. Status=I, ThreadID=K, Link=L.
 const HEADER = [
   "Received",
   "Company",
@@ -58,6 +60,7 @@ const HEADER = [
   "Status",
   "Source",
   "ThreadID",
+  "Link",
 ];
 
 function sheetsClient(auth: OAuth2Client): sheets_v4.Sheets {
@@ -65,7 +68,7 @@ function sheetsClient(auth: OAuth2Client): sheets_v4.Sheets {
 }
 
 function dataRange(): string {
-  return `${config.sheets.dataSheet}!A:K`;
+  return `${config.sheets.dataSheet}!A:L`;
 }
 
 /** Reads all tracked opportunities (skips the header row). */
@@ -89,6 +92,7 @@ export async function readRows(auth: OAuth2Client): Promise<TrackedJob[]> {
     status: r[8] ?? "",
     source: r[9] ?? "",
     threadId: r[10] ?? "",
+    link: r[11] ?? "",
   }));
 }
 
@@ -104,6 +108,7 @@ export interface NewJobRow {
   status: string;
   source: string;
   threadId: string;
+  link: string;
 }
 
 function rowValues(job: NewJobRow): (string | number)[] {
@@ -119,6 +124,7 @@ function rowValues(job: NewJobRow): (string | number)[] {
     job.status,
     job.source,
     job.threadId,
+    job.link,
   ];
 }
 
@@ -209,12 +215,12 @@ export async function ensureSheets(auth: OAuth2Client): Promise<void> {
   // Write the header on the data tab if A1 is empty.
   const head = await sheets.spreadsheets.values.get({
     spreadsheetId: config.sheets.spreadsheetId,
-    range: `${config.sheets.dataSheet}!A1:K1`,
+    range: `${config.sheets.dataSheet}!A1:L1`,
   });
   if (!head.data.values || head.data.values.length === 0) {
     await sheets.spreadsheets.values.update({
       spreadsheetId: config.sheets.spreadsheetId,
-      range: `${config.sheets.dataSheet}!A1:K1`,
+      range: `${config.sheets.dataSheet}!A1:L1`,
       valueInputOption: "RAW",
       requestBody: { values: [HEADER] },
     });
@@ -246,5 +252,50 @@ export async function setLastChecked(
     range: `${config.sheets.metaSheet}!A1:B1`,
     valueInputOption: "RAW",
     requestBody: { values: [["lastCheckedEpoch", epochSeconds]] },
+  });
+}
+
+/**
+ * Notification state, kept just below the ingest watermark:
+ *   Meta!B2 — lastNotifiedEpoch (epoch seconds of the last digest sent)
+ *   Meta!B3 — pending alert items, as an opaque JSON string (held until the
+ *             hourly gate opens, so updates within the hour are never lost).
+ * `setLastChecked` writes A1:B1 only and this writes A2:B3 only, so they don't
+ * clobber each other.
+ */
+export async function getNotifyState(
+  auth: OAuth2Client,
+): Promise<{ lastNotifiedEpoch: number | null; pendingJson: string }> {
+  const sheets = sheetsClient(auth);
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: config.sheets.spreadsheetId,
+    range: `${config.sheets.metaSheet}!A2:B3`,
+  });
+  const rows = res.data.values ?? [];
+  const epochRaw = rows[0]?.[1]; // B2
+  const n = epochRaw != null ? Number(epochRaw) : NaN;
+  const pendingJson = (rows[1]?.[1] as string) ?? ""; // B3
+  return {
+    lastNotifiedEpoch: Number.isFinite(n) && n > 0 ? n : null,
+    pendingJson: typeof pendingJson === "string" ? pendingJson : "",
+  };
+}
+
+export async function setNotifyState(
+  auth: OAuth2Client,
+  lastNotifiedEpoch: number,
+  pendingJson: string,
+): Promise<void> {
+  const sheets = sheetsClient(auth);
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: config.sheets.spreadsheetId,
+    range: `${config.sheets.metaSheet}!A2:B3`,
+    valueInputOption: "RAW",
+    requestBody: {
+      values: [
+        ["lastNotifiedEpoch", lastNotifiedEpoch],
+        ["pendingAlerts", pendingJson],
+      ],
+    },
   });
 }

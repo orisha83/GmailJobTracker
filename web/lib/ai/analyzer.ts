@@ -24,6 +24,8 @@ export interface EmailInput {
   senderName?: string;
   /** Sender domain (hint for the hiring company). */
   senderDomain?: string;
+  /** Candidate URLs from the email — the model picks the best job/careers link. */
+  links?: string[];
 }
 
 export interface Analysis {
@@ -40,6 +42,8 @@ export interface Analysis {
   interview_datetime: string | null;
   /** One-sentence English summary of what's requested from the candidate. */
   summary: string;
+  /** Best job-posting / careers / company URL from the email, or "" if none. */
+  apply_url: string;
 }
 
 export interface EmailAnalyzer {
@@ -101,5 +105,9 @@ export function normalizeAnalysis(raw: unknown): Analysis | null {
         ? r.interview_datetime.trim()
         : null,
     summary: typeof r.summary === "string" ? r.summary.trim() : "",
+    apply_url:
+      typeof r.apply_url === "string" && /^https?:\/\//i.test(r.apply_url.trim())
+        ? r.apply_url.trim()
+        : "",
   };
 }

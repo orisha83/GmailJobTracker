@@ -37,8 +37,11 @@ Crucial — conditional/future contact is NOT an invitation:
 The email was received at: ${input.emailDate} (timezone ${timezone}).
 If the email proposes a specific date/time (incl. relative phrases like "next Tuesday at 3pm"), resolve it to an absolute ISO 8601 timestamp using the received date. Otherwise null.
 
+"apply_url": from the Candidate links below, choose the SINGLE URL that best points to this specific job posting / application portal / company careers page or site. Ignore unsubscribe, social, login, and tracking links. Use "" if none fits or the list is empty. Output the URL exactly as listed — never invent one.
+
 Email Subject: ${input.subject}
 Email Body: ${body}
+Candidate links:${input.links?.length ? "\n" + input.links.map((l) => `- ${l}`).join("\n") : " (none)"}
 
 Respond ONLY with a valid JSON object (no markdown fences) using exactly this structure:
 {
@@ -48,7 +51,8 @@ Respond ONLY with a valid JSON object (no markdown fences) using exactly this st
   "category": "Invitation" | "Applied" | "Rejection" | "Offer" | "Other",
   "step": "short step label",
   "interview_datetime": "ISO 8601 string or null",
-  "summary": "One-sentence English summary of what the email says / requests"
+  "summary": "One-sentence English summary of what the email says / requests",
+  "apply_url": "best job/careers URL from the candidate links, or empty string"
 }`;
 }
 

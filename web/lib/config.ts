@@ -75,6 +75,9 @@ export const config = {
     searchQuery: env("SEARCH_QUERY") ?? DEFAULT_SEARCH_QUERY,
     timezone: env("TIMEZONE") ?? "Asia/Jerusalem",
     notifyEmail: env("NOTIFY_EMAIL") ?? "",
+    // Min minutes between notification emails. Updates arriving inside the window
+    // are held and rolled into the next digest, so at most one email per window.
+    notifyMinIntervalMinutes: Number(env("NOTIFY_MIN_INTERVAL_MINUTES") ?? "60"),
     // First-run floor (YYYY/MM/DD); after that the Sheet watermark takes over.
     startDate: env("INGEST_START_DATE") ?? todayStartDate(),
     // Max emails analyzed (AI calls) per run; bounds the serverless time budget.

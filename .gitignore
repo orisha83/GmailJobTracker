@@ -9,6 +9,9 @@ node_modules/
 out/
 dist/
 
+# Personal data — keep local, never commit
+docs/Ori_Shalom_CV.pdf
+
 # OS / editor
 .DS_Store
 *.log

@@ -20,7 +20,16 @@ const MAX_BODY_CHARS = 4000;
 const OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["is_relevant", "company", "role", "category", "step", "interview_datetime", "summary"],
+  required: [
+    "is_relevant",
+    "company",
+    "role",
+    "category",
+    "step",
+    "interview_datetime",
+    "summary",
+    "apply_url",
+  ],
   properties: {
     is_relevant: { type: "boolean" },
     company: { type: "string" },
@@ -32,6 +41,7 @@ const OUTPUT_SCHEMA = {
     step: { type: "string" },
     interview_datetime: { type: "string" }, // local wall-clock "YYYY-MM-DDTHH:MM:SS" (no timezone), or "" if none
     summary: { type: "string" },
+    apply_url: { type: "string" }, // best job/careers URL from the candidate links, or "" if none
   },
 } as const;
 
@@ -58,8 +68,11 @@ Set "is_relevant" false for anything not about this candidate's own job applicat
 
 "summary": one English sentence on what the email says/requests.
 
+"apply_url": from the Candidate links below, choose the SINGLE URL that best points to this specific job posting / application portal / company careers page or site. Ignore unsubscribe, social, login, and tracking links. Output "" if none of them fits or the list is empty. Output the URL exactly as listed — never invent one.
+
 Subject: ${input.subject}
-Body: ${body}`;
+Body: ${body}
+Candidate links:${(input.links ?? []).length ? "\n" + (input.links ?? []).map((l) => `- ${l}`).join("\n") : " (none)"}`;
 }
 
 export class ClaudeAnalyzer implements EmailAnalyzer {

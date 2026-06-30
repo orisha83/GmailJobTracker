@@ -15,6 +15,9 @@ export interface FetchedMessage {
   senderName: string;
   /** Sender domain, e.g. "checkpoint.com" (lowercased; may be empty). */
   senderDomain: string;
+  /** Candidate URLs found in the email (anchors + plain-text), filtered of junk.
+   *  The AI picks the best job/careers link from these. */
+  links: string[];
 }
 
 /** Parses a From header like `"Acme Careers" <jobs@acme.com>` into name + domain. */
@@ -81,6 +84,39 @@ function extractPlainBody(payload?: gmail_v1.Schema$MessagePart): string {
   return decode(payload.body?.data);
 }
 
+// Links we never want to surface as a "company site" — list/footer noise.
+const JUNK_LINK_RE =
+  /(unsubscribe|mailto:|tel:|\/preferences|\/privacy|\/terms|facebook\.com|twitter\.com|x\.com|instagram\.com|youtube\.com|linkedin\.com\/(?:in|sharing)|t\.me|\.(?:png|jpe?g|gif|svg|css|js)(?:[?#]|$))/i;
+
+/** Walk MIME parts and collect candidate URLs from anchors (HTML) and raw text. */
+function collectLinks(payload: gmail_v1.Schema$MessagePart | undefined, out: Set<string>): void {
+  if (!payload || out.size >= 15) return;
+
+  const decode = (data?: string | null): string =>
+    data ? Buffer.from(data, "base64url").toString("utf-8") : "";
+
+  const add = (url: string) => {
+    const u = url.trim().replace(/[)\]"'.,>]+$/, "");
+    if (/^https?:\/\//i.test(u) && !JUNK_LINK_RE.test(u) && out.size < 15) out.add(u);
+  };
+
+  if (payload.mimeType === "text/html" && payload.body?.data) {
+    const html = decode(payload.body.data);
+    for (const m of html.matchAll(/href\s*=\s*["']([^"']+)["']/gi)) add(m[1]);
+  } else if (payload.mimeType === "text/plain" && payload.body?.data) {
+    const text = decode(payload.body.data);
+    for (const m of text.matchAll(/https?:\/\/[^\s<>"')]+/gi)) add(m[0]);
+  }
+  for (const part of payload.parts ?? []) collectLinks(part, out);
+}
+
+/** Deduped, junk-filtered candidate links from the whole message (capped). */
+function extractLinks(payload?: gmail_v1.Schema$MessagePart): string[] {
+  const out = new Set<string>();
+  collectLinks(payload, out);
+  return [...out];
+}
+
 /** Fetches one message and extracts the fields we analyze. */
 export async function fetchMessage(
   auth: OAuth2Client,
@@ -112,6 +148,7 @@ export async function fetchMessage(
     date,
     senderName,
     senderDomain,
+    links: extractLinks(msg.payload),
   };
 }
 

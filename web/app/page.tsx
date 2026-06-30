@@ -27,6 +27,7 @@ interface Job {
   status: string;
   source: string;
   threadId: string;
+  link: string;
 }
 
 /** A derived position = a company + role, built from its email events. */
@@ -42,6 +43,7 @@ interface Position {
   rounds: number;
   stale: boolean;
   latestThreadId: string;
+  link: string; // best job/careers URL from the position's emails ("" if none)
 }
 
 type Filter = "Active" | "Needs attention" | "Rejected" | "All";
@@ -201,6 +203,60 @@ function pickInterview(jobs: Job[]): string {
   return (upcoming[0] ?? times.sort((a, b) => b.t - a.t)[0]).s;
 }
 
+const pad2 = (n: number) => String(n).padStart(2, "0");
+/** Google Calendar "create event" link, prefilled from the interview wall-clock
+ *  time (1h default), with the company/role as title and the apply link in details.
+ *  ctz pins the wall-clock numerals to the candidate's zone. null if no time. */
+function calendarUrl(p: Position): string | null {
+  const t = wallClockParts(p.nextInterview);
+  if (!t) return null;
+  const start = `${t.y}${pad2(t.mo)}${pad2(t.d)}T${pad2(t.h)}${pad2(t.mi)}00`;
+  const e = new Date(Date.UTC(t.y, t.mo - 1, t.d, t.h + 1, t.mi));
+  const end = `${e.getUTCFullYear()}${pad2(e.getUTCMonth() + 1)}${pad2(e.getUTCDate())}T${pad2(e.getUTCHours())}${pad2(e.getUTCMinutes())}00`;
+  const params = new URLSearchParams({
+    action: "TEMPLATE",
+    text: `${isRealRole(p.role) ? `${p.role} @ ` : "Interview @ "}${p.company}`,
+    dates: `${start}/${end}`,
+    ctz: DISPLAY_TZ,
+  });
+  if (p.link) params.set("details", `Link: ${p.link}`);
+  return `https://calendar.google.com/calendar/render?${params.toString()}`;
+}
+
+// Recruiting/scheduling/search hosts whose favicon isn't the hiring company's logo.
+const NON_COMPANY_HOST_RE =
+  /(greenhouse|lever\.co|myworkday|workday|comeet|workable|ashbyhq|smartrecruiters|bamboohr|teamtailor|calendly|cal\.com|google\.com|docs\.google)/i;
+/** Best-guess company domain for a favicon — the apply link's host, unless it's an
+ *  ATS/scheduler/search host (then we can't tell, so no logo). */
+function companyDomain(p: Position): string | null {
+  if (!p.link) return null;
+  try {
+    const host = new URL(p.link).hostname.replace(/^www\./, "");
+    return NON_COMPANY_HOST_RE.test(host) ? null : host;
+  } catch {
+    return null;
+  }
+}
+
+type SortKey = "interview" | "recent" | "company";
+const SORTS: { key: SortKey; label: string }[] = [
+  { key: "interview", label: "Next interview" },
+  { key: "recent", label: "Last activity" },
+  { key: "company", label: "Company A–Z" },
+];
+function sortPositions(list: Position[], by: SortKey): Position[] {
+  const arr = [...list];
+  if (by === "company") return arr.sort((a, b) => a.company.localeCompare(b.company));
+  if (by === "recent")
+    return arr.sort((a, b) => (b.lastUpdate || "").localeCompare(a.lastUpdate || ""));
+  return arr.sort((a, b) => {
+    const ai = a.nextInterview ? wallClockMs(a.nextInterview) : Infinity;
+    const bi = b.nextInterview ? wallClockMs(b.nextInterview) : Infinity;
+    if (ai !== bi) return ai - bi;
+    return (b.lastUpdate || "").localeCompare(a.lastUpdate || "");
+  });
+}
+
 function makePosition(company: string, role: string, jobs: Job[]): Position {
   const byRecent = [...jobs].sort((a, b) => (b.received || "").localeCompare(a.received || ""));
   const latest = byRecent[0];
@@ -217,6 +273,7 @@ function makePosition(company: string, role: string, jobs: Job[]): Position {
     rounds: jobs.length,
     stale: false,
     latestThreadId: latest?.threadId || "",
+    link: byRecent.find((j) => j.link)?.link || "",
   };
   pos.stale = !isTerminal(pos) && daysSince(lastUpdate) > STALE_DAYS;
   return pos;
@@ -338,6 +395,8 @@ export default function Dashboard() {
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("Active");
   const [loading, setLoading] = useState(false);
+  const [query, setQuery] = useState("");
+  const [sortBy, setSortBy] = useState<SortKey>("interview");
 
   const load = useCallback(async () => {
     setError(null);
@@ -383,7 +442,13 @@ export default function Dashboard() {
     ).length,
     All: positions.length,
   };
-  const visible = positions.filter(matches);
+  const q = norm(query);
+  const visible = sortPositions(
+    positions
+      .filter(matches)
+      .filter((p) => !q || norm(p.company).includes(q) || norm(p.role).includes(q)),
+    sortBy,
+  );
 
   async function changeStatus(p: Position, status: string) {
     if (!p.latestThreadId) return;
@@ -409,9 +474,11 @@ export default function Dashboard() {
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-8 sm:py-12">
-      <header className="mb-6 flex items-center justify-between gap-4">
+      <header className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900">Job Inbox Tracker</h1>
+          <h1 className="text-xl font-bold tracking-tight text-slate-900 sm:text-2xl">
+            Job Inbox Tracker
+          </h1>
           <p className="text-sm text-slate-500">
             Each position, with its current status from the latest email.
           </p>
@@ -450,6 +517,32 @@ export default function Dashboard() {
         </div>
       )}
 
+      {jobs !== null && positions.length > 0 && (
+        <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center">
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search company or role…"
+            className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 shadow-sm placeholder:text-slate-400 focus:border-slate-400 focus:outline-none sm:flex-1"
+          />
+          <label className="flex items-center gap-2 text-sm text-slate-500">
+            <span className="hidden sm:inline">Sort</span>
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as SortKey)}
+              className="w-full rounded-lg border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 shadow-sm focus:outline-none sm:w-auto"
+            >
+              {SORTS.map((s) => (
+                <option key={s.key} value={s.key}>
+                  {s.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      )}
+
       {jobs === null && (
         <div className="rounded-xl border border-slate-200 bg-white p-10 text-center text-slate-500">
           Loading positions…
@@ -473,7 +566,11 @@ export default function Dashboard() {
 
       {jobs !== null && positions.length > 0 && visible.length === 0 && !error && (
         <div className="rounded-xl border border-dashed border-slate-300 bg-white p-10 text-center text-slate-500">
-          Nothing in “{filter}”. Try another filter.
+          {q ? (
+            <>No matches for “{query}” in “{filter}”.</>
+          ) : (
+            <>Nothing in “{filter}”. Try another filter.</>
+          )}
         </div>
       )}
 
@@ -495,17 +592,24 @@ export default function Dashboard() {
                 {visible.map((p) => (
                   <tr key={p.key} className="align-top">
                     <td className="px-4 py-3">
-                      <div className="font-medium text-slate-900">{p.company}</div>
-                      <div className="text-slate-500">{p.role}</div>
-                      {p.stale && <StaleBadge />}
-                      {p.rounds > 1 && (
-                        <div className="mt-1 text-xs text-slate-400">{p.rounds} emails</div>
-                      )}
+                      <div className="flex items-start gap-2">
+                        <CompanyLogo position={p} />
+                        <div>
+                          <CompanyName position={p} />
+                          <div className="text-slate-500">{p.role}</div>
+                          {p.stale && <StaleBadge />}
+                          {p.rounds > 1 && (
+                            <div className="mt-1 text-xs text-slate-400">{p.rounds} emails</div>
+                          )}
+                        </div>
+                      </div>
                     </td>
                     <td className="px-4 py-3">
                       <StatusBadge status={p.status} category={p.category} />
                     </td>
-                    <td className="px-4 py-3 whitespace-nowrap">{fmtInterview(p.nextInterview)}</td>
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <NextInterview position={p} />
+                    </td>
                     <td className="px-4 py-3 whitespace-nowrap text-slate-500">
                       {fmtDay(p.lastUpdate)}
                     </td>
@@ -527,16 +631,21 @@ export default function Dashboard() {
             {visible.map((p) => (
               <div key={p.key} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
                 <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <div className="font-medium text-slate-900">{p.company}</div>
-                    <div className="text-sm text-slate-500">{p.role}</div>
+                  <div className="flex items-start gap-2">
+                    <CompanyLogo position={p} />
+                    <div>
+                      <CompanyName position={p} />
+                      <div className="text-sm text-slate-500">{p.role}</div>
+                    </div>
                   </div>
                   <StatusBadge status={p.status} category={p.category} />
                 </div>
                 {p.stale && <div className="mt-2"><StaleBadge /></div>}
                 <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-600">
                   {p.nextInterview && (
-                    <span className="text-violet-700">📅 {fmtInterview(p.nextInterview)}</span>
+                    <span className="text-violet-700">
+                      📅 <NextInterview position={p} />
+                    </span>
                   )}
                   <span className="text-slate-400">Updated {fmtDay(p.lastUpdate)}</span>
                   {p.rounds > 1 && <span className="text-slate-400">{p.rounds} emails</span>}
@@ -554,6 +663,79 @@ export default function Dashboard() {
         </>
       )}
     </main>
+  );
+}
+
+const isKnownCompany = (name: string) => {
+  const n = norm(name);
+  return n !== "" && n !== "unknown";
+};
+/** Where the company name links to: the extracted job/careers URL, else a
+ *  Google "{company} careers" search. */
+function companyHref(p: Position): string {
+  if (p.link) return p.link;
+  return `https://www.google.com/search?q=${encodeURIComponent(`${p.company} careers`)}`;
+}
+
+/** Company name — a link to its job/careers page when we can resolve one,
+ *  otherwise plain text (e.g. an "Unknown" company with no link). */
+function CompanyName({ position }: { position: Position }) {
+  if (!position.link && !isKnownCompany(position.company)) {
+    return <div className="font-medium text-slate-900">{position.company}</div>;
+  }
+  return (
+    <a
+      href={companyHref(position)}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="font-medium text-slate-900 hover:text-slate-950 hover:underline"
+      title={position.link || `Search "${position.company} careers"`}
+    >
+      {position.company}
+    </a>
+  );
+}
+
+/** Company logo via favicon when we can resolve a domain, else a letter avatar. */
+function CompanyLogo({ position }: { position: Position }) {
+  const [broken, setBroken] = useState(false);
+  const domain = companyDomain(position);
+  const letter = (position.company || "?").trim().charAt(0).toUpperCase() || "?";
+  if (domain && !broken) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        src={`https://www.google.com/s2/favicons?domain=${domain}&sz=64`}
+        alt=""
+        width={20}
+        height={20}
+        className="mt-0.5 h-5 w-5 shrink-0 rounded"
+        onError={() => setBroken(true)}
+      />
+    );
+  }
+  return (
+    <div className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded bg-slate-200 text-[10px] font-semibold text-slate-600">
+      {letter}
+    </div>
+  );
+}
+
+/** Interview date/time — links to a prefilled Google Calendar event when timed. */
+function NextInterview({ position }: { position: Position }) {
+  const url = calendarUrl(position);
+  const label = fmtInterview(position.nextInterview);
+  if (!url) return <>{label}</>;
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="text-violet-700 hover:underline"
+      title="Add to Google Calendar"
+    >
+      {label}
+    </a>
   );
 }
 
@@ -589,7 +771,7 @@ function OverrideSelect({
       disabled={saving}
       value=""
       onChange={(e) => e.target.value && onChange(position, e.target.value)}
-      className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 disabled:opacity-50"
+      className="w-full rounded-md border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 disabled:opacity-50 sm:w-auto sm:py-1 sm:text-xs"
     >
       <option value="">Set status…</option>
       {OVERRIDE_STATUSES.map((s) => (
