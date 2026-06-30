@@ -59,6 +59,12 @@ export const config = {
     processedSheet: env("SHEET_PROCESSED_TAB") ?? "Processed",
     metaSheet: env("SHEET_META_TAB") ?? "Meta",
   },
+  // Which analyzer to use: "claude" (default) or "gemini".
+  aiProvider: (env("AI_PROVIDER") ?? "claude").toLowerCase(),
+  anthropic: {
+    apiKey: env("ANTHROPIC_API_KEY") ?? "",
+    model: env("ANTHROPIC_MODEL") ?? "claude-haiku-4-5",
+  },
   gemini: {
     apiKey: env("GEMINI_API_KEY") ?? "",
     // flash-lite: free tier ~1000 req/day & 15/min (vs only 20/day for
@@ -71,12 +77,10 @@ export const config = {
     notifyEmail: env("NOTIFY_EMAIL") ?? "",
     // First-run floor (YYYY/MM/DD); after that the Sheet watermark takes over.
     startDate: env("INGEST_START_DATE") ?? todayStartDate(),
-    // Max AI (Gemini) calls per run — the binding free-tier constraint (~20/day).
-    maxPerRun: Number(env("MAX_PER_RUN") ?? "10"),
-    throttleMs: Number(env("GEMINI_THROTTLE_MS") ?? "4500"),
-    // Max threads fetched+classified per run (rule classification is free, so
-    // this only bounds serverless time). Remainder defers to the next run.
-    maxFetchPerRun: Number(env("MAX_FETCH_PER_RUN") ?? "30"),
+    // Max emails analyzed (AI calls) per run; bounds the serverless time budget.
+    // Claude has high limits, so this is just a per-run safety cap.
+    maxPerRun: Number(env("MAX_PER_RUN") ?? "25"),
+    throttleMs: Number(env("AI_THROTTLE_MS") ?? "300"),
   },
   // Protects /api/cron/poll so only the scheduler can trigger ingestion.
   cronSecret: env("CRON_SECRET") ?? "",
@@ -88,6 +92,8 @@ export type ConfigKey =
   | "google.refreshToken"
   | "sheets.spreadsheetId"
   | "gemini.apiKey"
+  | "anthropic.apiKey"
+  | "ai.apiKey"
   | "cronSecret";
 
 const RESOLVERS: Record<ConfigKey, () => string> = {
@@ -96,6 +102,9 @@ const RESOLVERS: Record<ConfigKey, () => string> = {
   "google.refreshToken": () => config.google.refreshToken,
   "sheets.spreadsheetId": () => config.sheets.spreadsheetId,
   "gemini.apiKey": () => config.gemini.apiKey,
+  "anthropic.apiKey": () => config.anthropic.apiKey,
+  // The active provider's key (what actually matters for readiness).
+  "ai.apiKey": () => (config.aiProvider === "gemini" ? config.gemini.apiKey : config.anthropic.apiKey),
   cronSecret: () => config.cronSecret,
 };
 

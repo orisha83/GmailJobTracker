@@ -1,7 +1,11 @@
 /**
- * Ingestion orchestration: Gmail search → dedup → analyze → Sheet + notify.
- * Invoked hourly by /api/cron/poll (and manually during dev).
- * See docs/ArchitectureLite.md §2.
+ * Ingestion orchestration: Gmail search → dedup → AI classify → Sheet + notify.
+ * Invoked by /api/cron/poll. See docs/ArchitectureLite.md §2.
+ *
+ * AI-first: every new conversation is classified by the model (Claude by default),
+ * which identifies the hiring company, lifecycle category, step, and interview time.
+ * Positions are keyed on the normalized company NAME so a company's ack/interview/
+ * rejection group together even across different sender domains (ATS vs corporate).
  */
 import { makeAuthedClient } from "@/lib/google/auth";
 import { searchThreads, fetchMessage } from "@/lib/google/gmail";
@@ -17,25 +21,24 @@ import {
 import { notifyNewOpportunity } from "@/lib/notify";
 import { config } from "@/lib/config";
 import type { Analysis, EmailAnalyzer } from "@/lib/ai/analyzer";
-import { GeminiAnalyzer } from "@/lib/ai/gemini";
-import { classifyHeuristically, looksLikeInvitation } from "@/lib/classify/heuristics";
+import { getAnalyzer } from "@/lib/ai";
 
 export interface PollResult {
-  scanned: number; // threads handled (rule + ai)
+  scanned: number; // threads analyzed this run
   skipped: number; // already processed
   relevant: number; // logged
   invitations: number; // relevant AND category === "Invitation" (alerted)
-  ruleClassified: number; // acks/rejections handled free (no AI)
-  aiCalls: number; // Gemini calls made (counts against the daily quota)
-  irrelevant: number;
-  failed: number; // analyzer returned null
-  deferred: number; // left for the next run (a cap was reached)
-  query: string; // the Gmail query used (for visibility)
+  irrelevant: number; // model said not job-related
+  failed: number; // analyzer returned null (transient — retried next run)
+  deferred: number; // left for the next run (per-run cap reached)
+  query: string;
 }
 
-/** Stable position key from a company name when no sender domain is available. */
-function companySlug(company: string): string {
-  return (company || "").toLowerCase().replace(/[^a-z0-9]+/g, "").trim();
+/** Stable position key from the company name (domain fallback if unknown). */
+function companyKeyFor(company: string, domain: string): string {
+  const slug = (company || "").toLowerCase().replace(/[^a-z0-9]+/g, "").trim();
+  if (slug && slug !== "unknown") return slug;
+  return (domain || "").toLowerCase().trim() || "unknown";
 }
 
 function sleep(ms: number): Promise<void> {
@@ -46,18 +49,11 @@ function sleep(ms: number): Promise<void> {
 // the Processed-ID set prevents double-processing the overlap.
 const OVERLAP_SECONDS = 600;
 
-/**
- * Runs one ingestion pass. `analyzer` is injectable for testing / future
- * provider swaps; defaults to Gemini.
- */
-export async function runPoll(
-  analyzer: EmailAnalyzer = new GeminiAnalyzer(),
-): Promise<PollResult> {
+export async function runPoll(analyzer: EmailAnalyzer = getAnalyzer()): Promise<PollResult> {
   const auth = makeAuthedClient();
   await ensureSheets(auth);
 
-  // Delta scanning: only look at mail since the last successful run. On the
-  // first run (no watermark) fall back to the configured start date.
+  // Delta scanning: only mail since the last successful run (else the start date).
   const lastChecked = await getLastChecked(auth);
   const timeBound =
     lastChecked != null
@@ -71,36 +67,30 @@ export async function runPoll(
     skipped: 0,
     relevant: 0,
     invitations: 0,
-    ruleClassified: 0,
-    aiCalls: 0,
     irrelevant: 0,
     failed: 0,
     deferred: 0,
     query,
   };
 
-  // One hit per thread (conversation), newest first — collapses reply chains,
-  // calendar invites and reminders into a single tracked opportunity.
+  // One hit per thread (conversation), newest first.
   const threads = await searchThreads(auth, query);
   const processed = await getProcessedThreadIds(auth);
 
-  // Accumulate writes and alerts; flush in one batch each at the end to stay
-  // under the Sheets per-minute write quota.
+  // Batch writes + alerts; flush once at the end (Sheets write-quota friendly).
   const rowsToAppend: NewJobRow[] = [];
   const processedIds: string[] = [];
   const alerts: { subject: string; analysis: Analysis }[] = [];
 
-  let attempts = 0; // threads fetched this run (bounds serverless time)
   for (const { threadId, latestMessageId } of threads) {
     if (processed.has(threadId)) {
       result.skipped++;
       continue;
     }
-    if (attempts >= config.ingest.maxFetchPerRun) {
+    if (result.scanned >= config.ingest.maxPerRun) {
       result.deferred++;
-      continue;
+      continue; // not marked processed → handled next run
     }
-    attempts++;
 
     const message = await fetchMessage(auth, latestMessageId);
     if (!message) {
@@ -108,54 +98,33 @@ export async function runPoll(
       continue;
     }
 
-    // Rule-first: acks/rejections are classified for free; only the rest cost AI.
-    let analysis = classifyHeuristically(message);
-    let source = "rule";
-    if (!analysis) {
-      // Not an ack/rejection. Only spend a (capped) AI call when it looks like a
-      // real interview/recruiter email; otherwise it's broad-query noise — skip
-      // it for free so newsletters don't burn the daily AI budget.
-      if (!looksLikeInvitation(message)) {
-        result.irrelevant++;
-        processedIds.push(threadId); // settled — don't refetch it
-        continue;
-      }
-      // Needs AI — but the daily Gemini budget is small. Defer once it's spent.
-      if (result.aiCalls >= config.ingest.maxPerRun) {
-        result.deferred++;
-        continue; // not marked processed → retried next run
-      }
-      if (result.aiCalls > 0) await sleep(config.ingest.throttleMs);
-      result.aiCalls++;
-      source = "ai";
-      analysis = await analyzer.analyze({
-        subject: message.subject,
-        body: message.body,
-        emailDate: message.date,
-      });
-      if (!analysis) {
-        result.failed++;
-        continue; // transient AI failure → retry next run (not marked processed)
-      }
-    } else {
-      result.ruleClassified++;
-    }
-
+    if (result.scanned > 0) await sleep(config.ingest.throttleMs);
     result.scanned++;
-    const companyKey = (message.senderDomain || "").trim() || companySlug(analysis.company);
+
+    const analysis = await analyzer.analyze({
+      subject: message.subject,
+      body: message.body,
+      emailDate: message.date,
+      senderName: message.senderName,
+      senderDomain: message.senderDomain,
+    });
+    if (!analysis) {
+      result.failed++;
+      continue; // transient failure → retry next run (not marked processed)
+    }
 
     if (analysis.is_relevant) {
       rowsToAppend.push({
         received: message.date,
         company: analysis.company,
-        companyKey,
+        companyKey: companyKeyFor(analysis.company, message.senderDomain),
         role: analysis.role,
         step: analysis.step,
         category: analysis.category,
         interviewDateTime: analysis.interview_datetime ?? "",
         summary: analysis.summary,
         status: analysis.step, // current status = this email's step (overridable)
-        source,
+        source: "ai",
         threadId,
       });
       if (analysis.category === "Invitation") {
@@ -170,15 +139,12 @@ export async function runPoll(
     processedIds.push(threadId);
   }
 
-  // Flush: rows first, then processed markers (so a row is never marked
-  // processed without being saved), then alerts.
+  // Flush rows first, then processed markers (never mark processed unsaved), then alerts.
   await appendRows(auth, rowsToAppend);
   await markProcessedBatch(auth, processedIds);
   for (const a of alerts) await notifyNewOpportunity(auth, a.subject, a.analysis);
 
-  // Advance the watermark only when fully caught up — anything deferred or
-  // failed is older (we scan newest first), so leaving the watermark put keeps
-  // those items inside the next run's `after:` window until they're handled.
+  // Advance the watermark only when fully caught up.
   if (result.deferred === 0 && result.failed === 0) {
     await setLastChecked(auth, runStartedEpoch);
   }

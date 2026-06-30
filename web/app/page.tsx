@@ -114,6 +114,26 @@ function makePosition(company: string, role: string, jobs: Job[]): Position {
   return pos;
 }
 
+/** Most frequent non-"Unknown" company name in a group (so a recruiter's
+ *  personal name never wins the position label). */
+function bestCompanyName(group: Job[]): string {
+  const counts = new Map<string, number>();
+  for (const j of group) {
+    const name = (j.company || "").trim();
+    if (!name || name.toLowerCase() === "unknown") continue;
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  let best = "";
+  let bestN = 0;
+  for (const [name, n] of counts) {
+    if (n > bestN) {
+      bestN = n;
+      best = name;
+    }
+  }
+  return best || group.find((j) => j.company?.trim())?.company?.trim() || "Unknown";
+}
+
 /** Group events into positions: by company (+ distinct real role; Unknown folds in). */
 function buildPositions(jobs: Job[]): Position[] {
   const byCompany = new Map<string, Job[]>();
@@ -126,7 +146,7 @@ function buildPositions(jobs: Job[]): Position[] {
 
   const positions: Position[] = [];
   for (const group of byCompany.values()) {
-    const companyName = group.find((j) => j.company?.trim())?.company?.trim() || "Unknown";
+    const companyName = bestCompanyName(group);
     const realRoles = Array.from(
       new Map(
         group.filter((j) => isRealRole(j.role)).map((j) => [norm(j.role), j.role.trim()]),

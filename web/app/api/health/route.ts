@@ -11,7 +11,7 @@ export function GET() {
     "google.clientSecret",
     "google.refreshToken",
     "sheets.spreadsheetId",
-    "gemini.apiKey",
+    "ai.apiKey",
     "cronSecret",
   ]);
 

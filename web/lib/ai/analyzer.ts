@@ -20,6 +20,10 @@ export interface EmailInput {
   body: string;
   /** ISO 8601 timestamp the email was received — used to resolve relative dates. */
   emailDate: string;
+  /** Sender display name (hint for the hiring company). */
+  senderName?: string;
+  /** Sender domain (hint for the hiring company). */
+  senderDomain?: string;
 }
 
 export interface Analysis {
