@@ -15,24 +15,27 @@ const MAX_BODY_CHARS = 3000;
 
 function buildPrompt(input: EmailInput, timezone: string): string {
   const body = input.body.slice(0, MAX_BODY_CHARS);
-  return `You are an AI assistant helping a Product Manager track job application responses.
-Decide if the email is job-application related (interview, phone screening, technical/home assignment, HR conversation, application acknowledgement, or rejection). The email may be in Hebrew or English.
+  return `You are an AI assistant helping a candidate track where each job application stands.
+Analyze one email (it may be in Hebrew or English) and report the candidate's CURRENT step for that position.
 
-Set "is_relevant" to true for ANY job-application-related email (including acknowledgements and rejections), false for unrelated mail (newsletters, marketing, personal, etc.).
+Set "is_relevant" to true for ANY job-application-related email, false for unrelated mail (newsletters, marketing, personal).
 
-Classify "category" — this is the most important field:
-- "Invitation": the email asks the candidate to act NOW — to schedule or attend an interview/phone call/HR meeting, or to complete/submit a home assignment. There is a concrete next step requested of the candidate.
-- "Acknowledgement": the email merely confirms the application was received or is under review, or says they will reach out IF/WHEN there is a match. No action is requested of the candidate now. This includes conditional/future language.
-- "Rejection": the candidate is not moving forward.
+Classify "category":
+- "Invitation": the email asks the candidate to act NOW — schedule/attend an interview, phone screen, HR conversation, or complete/submit a home assignment. A concrete next step is requested.
+- "Applied": acknowledgement only — application received / under review, or "we'll contact you IF there's a match". No action requested now (conditional/future language counts here).
+- "Rejection": not moving forward.
+- "Offer": an offer is being extended.
 - "Other": job-related but none of the above.
 
-Crucial distinction — conditional/future contact is NOT an invitation:
-- "We received your CV and will review it; if there is a match we will contact you for a short phone call." => "Acknowledgement" (NOT "Invitation"), even though it mentions a phone call.
-- "We'd like to schedule a 30-minute call this week — what times work for you?" => "Invitation".
-- "Please complete the attached assignment by Sunday." => "Invitation".
+"step": a SHORT label (2-4 words) describing this specific step, used as the position's status. Identify the interview round / who it's with when stated, e.g. "HR screen", "Phone screen", "Recruiter call", "Hiring manager interview", "PM interview", "VP interview", "CEO interview", "Technical interview", "Home assignment", "Final round". For Applied use "Applied"; Rejection "Rejected"; Offer "Offer".
+
+Crucial — conditional/future contact is NOT an invitation:
+- "We received your CV; if there's a match we'll contact you for a call." => category "Applied".
+- "We'd like to schedule a 30-min call this week — what times work?" => "Invitation", step e.g. "Recruiter call".
+- "Please complete the attached assignment by Sunday." => "Invitation", step "Home assignment".
 
 The email was received at: ${input.emailDate} (timezone ${timezone}).
-If the email proposes a specific date/time (including relative phrases like "next Tuesday at 3pm"), resolve it to an absolute ISO 8601 timestamp using the received date above. If no specific time is proposed, use null.
+If the email proposes a specific date/time (incl. relative phrases like "next Tuesday at 3pm"), resolve it to an absolute ISO 8601 timestamp using the received date. Otherwise null.
 
 Email Subject: ${input.subject}
 Email Body: ${body}
@@ -42,8 +45,8 @@ Respond ONLY with a valid JSON object (no markdown fences) using exactly this st
   "is_relevant": true/false,
   "company": "Company name (translate to English if Hebrew)",
   "role": "Job title or role (translate to English if Hebrew)",
-  "type": "Interview" | "Phone Call" | "Home Assignment" | "HR Meeting",
-  "category": "Invitation" | "Acknowledgement" | "Rejection" | "Other",
+  "category": "Invitation" | "Applied" | "Rejection" | "Offer" | "Other",
+  "step": "short step label",
   "interview_datetime": "ISO 8601 string or null",
   "summary": "One-sentence English summary of what the email says / requests"
 }`;

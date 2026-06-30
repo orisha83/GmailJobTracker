@@ -23,7 +23,7 @@ export async function notifyNewOpportunity(
 
 Company: ${analysis.company}
 Role: ${analysis.role}
-Type: ${analysis.type}${when}
+Step: ${analysis.step}${when}
 Summary: ${analysis.summary}
 
 Original email subject: "${originalSubject}"

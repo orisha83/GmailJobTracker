@@ -11,6 +11,22 @@ export interface FetchedMessage {
   body: string;
   /** ISO 8601 received date. */
   date: string;
+  /** Sender display name, e.g. "Check Point HR" (may be empty). */
+  senderName: string;
+  /** Sender domain, e.g. "checkpoint.com" (lowercased; may be empty). */
+  senderDomain: string;
+}
+
+/** Parses a From header like `"Acme Careers" <jobs@acme.com>` into name + domain. */
+function parseFrom(from: string): { name: string; domain: string } {
+  if (!from) return { name: "", domain: "" };
+  const emailMatch = from.match(/<([^>]+)>/) ?? from.match(/([^\s<>]+@[^\s<>]+)/);
+  const email = emailMatch ? emailMatch[1].trim() : "";
+  const domain = email.includes("@") ? email.split("@")[1].toLowerCase().trim() : "";
+  // Display name = the part before <...>, stripped of quotes.
+  let name = from.replace(/<[^>]*>/, "").trim().replace(/^"|"$/g, "").trim();
+  if (!name && email) name = email.split("@")[0];
+  return { name, domain };
 }
 
 function gmailClient(auth: OAuth2Client): gmail_v1.Gmail {
@@ -78,6 +94,9 @@ export async function fetchMessage(
   const headers = msg.payload.headers ?? [];
   const subject =
     headers.find((h) => h.name?.toLowerCase() === "subject")?.value ?? "(no subject)";
+  const { name: senderName, domain: senderDomain } = parseFrom(
+    headers.find((h) => h.name?.toLowerCase() === "from")?.value ?? "",
+  );
 
   // internalDate is epoch ms as a string; fall back to the Date header.
   const date = msg.internalDate
@@ -86,7 +105,14 @@ export async function fetchMessage(
         headers.find((h) => h.name?.toLowerCase() === "date")?.value ?? Date.now(),
       ).toISOString();
 
-  return { id, subject, body: extractPlainBody(msg.payload), date };
+  return {
+    id,
+    subject,
+    body: extractPlainBody(msg.payload),
+    date,
+    senderName,
+    senderDomain,
+  };
 }
 
 /** Sends a plain-text email as the authenticated user (self-notification). */

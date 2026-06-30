@@ -6,27 +6,36 @@
 import { makeAuthedClient } from "@/lib/google/auth";
 import { searchThreads, fetchMessage } from "@/lib/google/gmail";
 import {
-  appendRow,
+  appendRows,
   ensureSheets,
   getLastChecked,
   getProcessedThreadIds,
-  markProcessed,
+  markProcessedBatch,
   setLastChecked,
+  type NewJobRow,
 } from "@/lib/google/sheets";
 import { notifyNewOpportunity } from "@/lib/notify";
 import { config } from "@/lib/config";
-import type { EmailAnalyzer } from "@/lib/ai/analyzer";
+import type { Analysis, EmailAnalyzer } from "@/lib/ai/analyzer";
 import { GeminiAnalyzer } from "@/lib/ai/gemini";
+import { classifyHeuristically, looksLikeInvitation } from "@/lib/classify/heuristics";
 
 export interface PollResult {
-  scanned: number;
+  scanned: number; // threads handled (rule + ai)
   skipped: number; // already processed
-  relevant: number; // logged as opportunities
+  relevant: number; // logged
   invitations: number; // relevant AND category === "Invitation" (alerted)
+  ruleClassified: number; // acks/rejections handled free (no AI)
+  aiCalls: number; // Gemini calls made (counts against the daily quota)
   irrelevant: number;
   failed: number; // analyzer returned null
-  deferred: number; // left for the next run (per-run cap reached)
+  deferred: number; // left for the next run (a cap was reached)
   query: string; // the Gmail query used (for visibility)
+}
+
+/** Stable position key from a company name when no sender domain is available. */
+function companySlug(company: string): string {
+  return (company || "").toLowerCase().replace(/[^a-z0-9]+/g, "").trim();
 }
 
 function sleep(ms: number): Promise<void> {
@@ -62,6 +71,8 @@ export async function runPoll(
     skipped: 0,
     relevant: 0,
     invitations: 0,
+    ruleClassified: 0,
+    aiCalls: 0,
     irrelevant: 0,
     failed: 0,
     deferred: 0,
@@ -73,20 +84,23 @@ export async function runPoll(
   const threads = await searchThreads(auth, query);
   const processed = await getProcessedThreadIds(auth);
 
-  let analyzed = 0;
+  // Accumulate writes and alerts; flush in one batch each at the end to stay
+  // under the Sheets per-minute write quota.
+  const rowsToAppend: NewJobRow[] = [];
+  const processedIds: string[] = [];
+  const alerts: { subject: string; analysis: Analysis }[] = [];
+
+  let attempts = 0; // threads fetched this run (bounds serverless time)
   for (const { threadId, latestMessageId } of threads) {
     if (processed.has(threadId)) {
       result.skipped++;
       continue;
     }
-    // Per-run cap: defer the rest to the next hourly run.
-    if (analyzed >= config.ingest.maxPerRun) {
+    if (attempts >= config.ingest.maxFetchPerRun) {
       result.deferred++;
       continue;
     }
-    if (analyzed > 0) await sleep(config.ingest.throttleMs);
-    analyzed++;
-    result.scanned++;
+    attempts++;
 
     const message = await fetchMessage(auth, latestMessageId);
     if (!message) {
@@ -94,33 +108,58 @@ export async function runPoll(
       continue;
     }
 
-    const analysis = await analyzer.analyze({
-      subject: message.subject,
-      body: message.body,
-      emailDate: message.date,
-    });
-
+    // Rule-first: acks/rejections are classified for free; only the rest cost AI.
+    let analysis = classifyHeuristically(message);
+    let source = "rule";
     if (!analysis) {
-      // Don't mark processed — let the next run retry transient failures.
-      result.failed++;
-      continue;
+      // Not an ack/rejection. Only spend a (capped) AI call when it looks like a
+      // real interview/recruiter email; otherwise it's broad-query noise — skip
+      // it for free so newsletters don't burn the daily AI budget.
+      if (!looksLikeInvitation(message)) {
+        result.irrelevant++;
+        processedIds.push(threadId); // settled — don't refetch it
+        continue;
+      }
+      // Needs AI — but the daily Gemini budget is small. Defer once it's spent.
+      if (result.aiCalls >= config.ingest.maxPerRun) {
+        result.deferred++;
+        continue; // not marked processed → retried next run
+      }
+      if (result.aiCalls > 0) await sleep(config.ingest.throttleMs);
+      result.aiCalls++;
+      source = "ai";
+      analysis = await analyzer.analyze({
+        subject: message.subject,
+        body: message.body,
+        emailDate: message.date,
+      });
+      if (!analysis) {
+        result.failed++;
+        continue; // transient AI failure → retry next run (not marked processed)
+      }
+    } else {
+      result.ruleClassified++;
     }
 
+    result.scanned++;
+    const companyKey = (message.senderDomain || "").trim() || companySlug(analysis.company);
+
     if (analysis.is_relevant) {
-      await appendRow(auth, {
+      rowsToAppend.push({
         received: message.date,
         company: analysis.company,
+        companyKey,
         role: analysis.role,
-        type: analysis.type,
+        step: analysis.step,
         category: analysis.category,
         interviewDateTime: analysis.interview_datetime ?? "",
         summary: analysis.summary,
-        status: analysis.category === "Rejection" ? "Rejected" : "Review Needed",
+        status: analysis.step, // current status = this email's step (overridable)
+        source,
         threadId,
       });
-      // Alert ONLY for genuine invitations — not acknowledgements/rejections.
       if (analysis.category === "Invitation") {
-        await notifyNewOpportunity(auth, message.subject, analysis);
+        alerts.push({ subject: message.subject, analysis });
         result.invitations++;
       }
       result.relevant++;
@@ -128,9 +167,14 @@ export async function runPoll(
       result.irrelevant++;
     }
 
-    // Mark the thread processed (relevant or not) — kept off the visible tab.
-    await markProcessed(auth, threadId);
+    processedIds.push(threadId);
   }
+
+  // Flush: rows first, then processed markers (so a row is never marked
+  // processed without being saved), then alerts.
+  await appendRows(auth, rowsToAppend);
+  await markProcessedBatch(auth, processedIds);
+  for (const a of alerts) await notifyNewOpportunity(auth, a.subject, a.analysis);
 
   // Advance the watermark only when fully caught up — anything deferred or
   // failed is older (we scan newest first), so leaving the watermark put keeps

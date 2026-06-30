@@ -11,12 +11,15 @@ import { google, type sheets_v4 } from "googleapis";
 import type { OAuth2Client } from "google-auth-library";
 import { config } from "@/lib/config";
 
+// Manual-override choices offered in the dashboard dropdown. Auto statuses set by
+// ingestion (the email's "step", e.g. "VP interview") can be any text — these are
+// just the curated options a user can switch a position to by hand.
 export const PIPELINE_STATUSES = [
-  "Review Needed",
-  "Replied",
-  "Scheduled",
-  "Done",
+  "Applied",
+  "Interviewing",
+  "Offer",
   "Rejected",
+  "Withdrawn",
   "Archived",
 ] as const;
 export type PipelineStatus = (typeof PIPELINE_STATUSES)[number];
@@ -26,26 +29,34 @@ export interface TrackedJob {
   rowNumber: number;
   received: string;
   company: string;
+  /** Normalized sender domain — robust grouping key for a position. */
+  companyKey: string;
   role: string;
-  type: string;
+  /** This email's step label (immutable record of the round). */
+  step: string;
   category: string;
   interviewDateTime: string;
   summary: string;
+  /** Current status (initialized to step; overridable by the user). */
   status: string;
-  /** Gmail thread ID — the dedup + status key (one conversation = one row). */
+  /** "rule" (heuristic) or "ai" (Gemini). */
+  source: string;
+  /** Gmail thread ID — the dedup key (one conversation = one row). */
   threadId: string;
 }
 
-// Column order: A..I. Category sits next to Type; Status=H, ThreadID=I.
+// Column order A..K. Status=I, ThreadID=K.
 const HEADER = [
   "Received",
   "Company",
+  "CompanyKey",
   "Role",
-  "Type",
+  "Step",
   "Category",
   "InterviewDateTime",
   "Summary",
   "Status",
+  "Source",
   "ThreadID",
 ];
 
@@ -54,7 +65,7 @@ function sheetsClient(auth: OAuth2Client): sheets_v4.Sheets {
 }
 
 function dataRange(): string {
-  return `${config.sheets.dataSheet}!A:I`;
+  return `${config.sheets.dataSheet}!A:K`;
 }
 
 /** Reads all tracked opportunities (skips the header row). */
@@ -69,58 +80,65 @@ export async function readRows(auth: OAuth2Client): Promise<TrackedJob[]> {
     rowNumber: i + 2, // +1 for header, +1 for 1-based
     received: r[0] ?? "",
     company: r[1] ?? "",
-    role: r[2] ?? "",
-    type: r[3] ?? "",
-    category: r[4] ?? "",
-    interviewDateTime: r[5] ?? "",
-    summary: r[6] ?? "",
-    status: r[7] ?? "",
-    threadId: r[8] ?? "",
+    companyKey: r[2] ?? "",
+    role: r[3] ?? "",
+    step: r[4] ?? "",
+    category: r[5] ?? "",
+    interviewDateTime: r[6] ?? "",
+    summary: r[7] ?? "",
+    status: r[8] ?? "",
+    source: r[9] ?? "",
+    threadId: r[10] ?? "",
   }));
 }
 
 export interface NewJobRow {
   received: string;
   company: string;
+  companyKey: string;
   role: string;
-  type: string;
+  step: string;
   category: string;
   interviewDateTime: string;
   summary: string;
   status: string;
+  source: string;
   threadId: string;
 }
 
-/** Appends one opportunity row. */
-export async function appendRow(auth: OAuth2Client, job: NewJobRow): Promise<void> {
+function rowValues(job: NewJobRow): (string | number)[] {
+  return [
+    job.received,
+    job.company,
+    job.companyKey,
+    job.role,
+    job.step,
+    job.category,
+    job.interviewDateTime,
+    job.summary,
+    job.status,
+    job.source,
+    job.threadId,
+  ];
+}
+
+/** Appends many event rows in a single write (avoids the Sheets per-minute write quota). */
+export async function appendRows(auth: OAuth2Client, jobs: NewJobRow[]): Promise<void> {
+  if (jobs.length === 0) return;
   const sheets = sheetsClient(auth);
   await sheets.spreadsheets.values.append({
     spreadsheetId: config.sheets.spreadsheetId,
     range: dataRange(),
     valueInputOption: "USER_ENTERED",
-    requestBody: {
-      values: [
-        [
-          job.received,
-          job.company,
-          job.role,
-          job.type,
-          job.category,
-          job.interviewDateTime,
-          job.summary,
-          job.status,
-          job.threadId,
-        ],
-      ],
-    },
+    requestBody: { values: jobs.map(rowValues) },
   });
 }
 
-/** Updates the Status cell (col G) for the row whose MessageID matches. */
+/** Updates the Status cell (col I) for the row of the given thread. */
 export async function updateStatus(
   auth: OAuth2Client,
   threadId: string,
-  status: PipelineStatus,
+  status: string,
 ): Promise<boolean> {
   const rows = await readRows(auth);
   const match = rows.find((r) => r.threadId === threadId);
@@ -129,7 +147,7 @@ export async function updateStatus(
   const sheets = sheetsClient(auth);
   await sheets.spreadsheets.values.update({
     spreadsheetId: config.sheets.spreadsheetId,
-    range: `${config.sheets.dataSheet}!H${match.rowNumber}`, // Status is column H
+    range: `${config.sheets.dataSheet}!I${match.rowNumber}`, // Status is column I
     valueInputOption: "USER_ENTERED",
     requestBody: { values: [[status]] },
   });
@@ -146,14 +164,18 @@ export async function getProcessedThreadIds(auth: OAuth2Client): Promise<Set<str
   return new Set((res.data.values ?? []).flat().filter(Boolean) as string[]);
 }
 
-/** Records that a thread has been processed (relevant or not). */
-export async function markProcessed(auth: OAuth2Client, threadId: string): Promise<void> {
+/** Records that threads have been processed (one batched write). */
+export async function markProcessedBatch(
+  auth: OAuth2Client,
+  threadIds: string[],
+): Promise<void> {
+  if (threadIds.length === 0) return;
   const sheets = sheetsClient(auth);
   await sheets.spreadsheets.values.append({
     spreadsheetId: config.sheets.spreadsheetId,
     range: `${config.sheets.processedSheet}!A:A`,
     valueInputOption: "RAW",
-    requestBody: { values: [[threadId]] },
+    requestBody: { values: threadIds.map((id) => [id]) },
   });
 }
 
@@ -187,12 +209,12 @@ export async function ensureSheets(auth: OAuth2Client): Promise<void> {
   // Write the header on the data tab if A1 is empty.
   const head = await sheets.spreadsheets.values.get({
     spreadsheetId: config.sheets.spreadsheetId,
-    range: `${config.sheets.dataSheet}!A1:I1`,
+    range: `${config.sheets.dataSheet}!A1:K1`,
   });
   if (!head.data.values || head.data.values.length === 0) {
     await sheets.spreadsheets.values.update({
       spreadsheetId: config.sheets.spreadsheetId,
-      range: `${config.sheets.dataSheet}!A1:I1`,
+      range: `${config.sheets.dataSheet}!A1:K1`,
       valueInputOption: "RAW",
       requestBody: { values: [HEADER] },
     });

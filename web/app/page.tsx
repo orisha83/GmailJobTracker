@@ -2,64 +2,57 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-// Mirrors PIPELINE_STATUSES in lib/google/sheets.ts (kept inline so this client
-// component doesn't import the server-only googleapis module).
-const STATUSES = [
-  "Review Needed",
-  "Replied",
-  "Scheduled",
-  "Done",
+// Manual-override options (mirrors PIPELINE_STATUSES in lib/google/sheets.ts).
+const OVERRIDE_STATUSES = [
+  "Applied",
+  "Interviewing",
+  "Offer",
   "Rejected",
+  "Withdrawn",
   "Archived",
 ] as const;
-type Status = (typeof STATUSES)[number];
 
-/** One raw Sheet row = one Gmail thread (conversation). */
+const STALE_DAYS = 14;
+
+/** One raw Sheet row = one email/round in a conversation. */
 interface Job {
-  rowNumber: number;
   received: string;
   company: string;
+  companyKey: string;
   role: string;
-  type: string;
+  step: string;
   category: string;
   interviewDateTime: string;
   summary: string;
   status: string;
+  source: string;
   threadId: string;
 }
 
-/** A merged view: one entry per company + real position. */
-interface Entry {
+/** A derived position = a company + role, built from its email events. */
+interface Position {
   key: string;
   company: string;
-  position: string;
-  category: string;
-  status: string;
-  type: string;
+  role: string;
+  status: string; // latest email's step (or manual override)
+  category: string; // latest email's category — drives color
   summary: string;
-  interview: string;
-  received: string;
-  count: number;
-  threadIds: string[];
+  lastUpdate: string;
+  nextInterview: string;
+  rounds: number;
+  stale: boolean;
+  latestThreadId: string;
 }
 
-type Filter = "Invitations" | "All";
-const FILTERS: Filter[] = ["Invitations", "All"];
+type Filter = "Active" | "Needs attention" | "Rejected" | "All";
+const FILTERS: Filter[] = ["Active", "Needs attention", "Rejected", "All"];
 
 const CATEGORY_STYLES: Record<string, string> = {
   Invitation: "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200",
-  Acknowledgement: "bg-sky-100 text-sky-800 ring-1 ring-sky-200",
+  Applied: "bg-sky-100 text-sky-800 ring-1 ring-sky-200",
+  Offer: "bg-violet-100 text-violet-800 ring-1 ring-violet-200",
   Rejection: "bg-rose-100 text-rose-800 ring-1 ring-rose-200",
   Other: "bg-slate-100 text-slate-600 ring-1 ring-slate-200",
-};
-
-const STATUS_STYLES: Record<string, string> = {
-  "Review Needed": "bg-amber-100 text-amber-900",
-  Replied: "bg-blue-100 text-blue-900",
-  Scheduled: "bg-violet-100 text-violet-900",
-  Done: "bg-emerald-100 text-emerald-900",
-  Rejected: "bg-rose-100 text-rose-900",
-  Archived: "bg-slate-200 text-slate-700",
 };
 
 const norm = (s: string) => (s || "").trim().toLowerCase();
@@ -67,6 +60,9 @@ const isRealRole = (role: string) => {
   const r = norm(role);
   return r !== "" && r !== "unknown";
 };
+const TERMINAL = new Set(["rejection", "offer", "rejected", "withdrawn", "archived"]);
+const isTerminal = (p: { category: string; status: string }) =>
+  TERMINAL.has(norm(p.category)) || TERMINAL.has(norm(p.status));
 
 function fmtDate(iso: string): string {
   if (!iso) return "—";
@@ -75,70 +71,60 @@ function fmtDate(iso: string): string {
     ? iso
     : d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
-
 function fmtDay(iso: string): string {
   if (!iso) return "—";
   const d = new Date(iso);
   return isNaN(d.getTime()) ? iso : d.toLocaleDateString(undefined, { dateStyle: "medium" });
 }
-
-function maxReceived(jobs: Job[]): string {
-  return jobs.reduce((m, j) => ((j.received || "") > m ? j.received || "" : m), "");
+function daysSince(iso: string): number {
+  const t = new Date(iso).getTime();
+  return isNaN(t) ? 0 : (Date.now() - t) / 86_400_000;
 }
 
-/** Soonest upcoming interview time among the threads; else the latest known. */
 function pickInterview(jobs: Job[]): string {
   const times = jobs
     .map((j) => j.interviewDateTime)
     .filter(Boolean)
     .map((s) => ({ s, t: new Date(s).getTime() }))
     .filter((x) => !isNaN(x.t));
-  if (times.length === 0) return "";
+  if (!times.length) return "";
   const now = Date.now();
   const upcoming = times.filter((x) => x.t >= now).sort((a, b) => a.t - b.t);
-  if (upcoming.length) return upcoming[0].s;
-  return times.sort((a, b) => b.t - a.t)[0].s;
+  return (upcoming[0] ?? times.sort((a, b) => b.t - a.t)[0]).s;
 }
 
-function makeEntry(company: string, role: string, jobs: Job[]): Entry {
-  const primary = [...jobs].sort((a, b) => (b.received || "").localeCompare(a.received || ""))[0];
-  const category = jobs.some((j) => j.category === "Invitation")
-    ? "Invitation"
-    : jobs.some((j) => j.category === "Acknowledgement")
-      ? "Acknowledgement"
-      : jobs.some((j) => j.category === "Rejection")
-        ? "Rejection"
-        : primary?.category || "Other";
-  return {
-    key: `${norm(company)}|${norm(role)}`,
+function makePosition(company: string, role: string, jobs: Job[]): Position {
+  const byRecent = [...jobs].sort((a, b) => (b.received || "").localeCompare(a.received || ""));
+  const latest = byRecent[0];
+  const lastUpdate = latest?.received || "";
+  const pos: Position = {
+    key: `${norm(latest?.companyKey || company)}|${norm(role)}`,
     company,
-    position: role || "—",
-    category,
-    status: primary?.status || "Review Needed",
-    type: primary?.type || "",
-    summary: primary?.summary || "",
-    interview: pickInterview(jobs),
-    received: primary?.received || "",
-    count: jobs.length,
-    threadIds: jobs.map((j) => j.threadId).filter(Boolean),
+    role: role || "—",
+    status: latest?.status || latest?.step || "Applied",
+    category: latest?.category || "Other",
+    summary: latest?.summary || "",
+    lastUpdate,
+    nextInterview: pickInterview(jobs),
+    rounds: jobs.length,
+    stale: false,
+    latestThreadId: latest?.threadId || "",
   };
+  pos.stale = !isTerminal(pos) && daysSince(lastUpdate) > STALE_DAYS;
+  return pos;
 }
 
-/**
- * Merge threads into one entry per company + real position. Unknown-role threads
- * fold into the company's (single) real position, or attach to its most-recent
- * position when there are several distinct real roles.
- */
-function buildEntries(jobs: Job[]): Entry[] {
+/** Group events into positions: by company (+ distinct real role; Unknown folds in). */
+function buildPositions(jobs: Job[]): Position[] {
   const byCompany = new Map<string, Job[]>();
   for (const j of jobs) {
-    const k = norm(j.company) || "unknown";
+    const k = norm(j.companyKey) || norm(j.company) || "unknown";
     const arr = byCompany.get(k) ?? [];
     arr.push(j);
     byCompany.set(k, arr);
   }
 
-  const entries: Entry[] = [];
+  const positions: Position[] = [];
   for (const group of byCompany.values()) {
     const companyName = group.find((j) => j.company?.trim())?.company?.trim() || "Unknown";
     const realRoles = Array.from(
@@ -148,36 +134,35 @@ function buildEntries(jobs: Job[]): Entry[] {
     );
 
     if (realRoles.length <= 1) {
-      entries.push(makeEntry(companyName, realRoles[0] ?? "", group));
+      positions.push(makePosition(companyName, realRoles[0] ?? "", group));
       continue;
     }
-
-    const roleBuckets = realRoles.map((role) => ({
+    const buckets = realRoles.map((role) => ({
       role,
       jobs: group.filter((j) => norm(j.role) === norm(role)),
     }));
-    const unknownJobs = group.filter((j) => !isRealRole(j.role));
-    if (unknownJobs.length) {
-      let target = roleBuckets[0];
+    const unknown = group.filter((j) => !isRealRole(j.role));
+    if (unknown.length) {
+      let target = buckets[0];
       let latest = "";
-      for (const b of roleBuckets) {
-        const m = maxReceived(b.jobs);
+      for (const b of buckets) {
+        const m = b.jobs.reduce((x, j) => ((j.received || "") > x ? j.received || "" : x), "");
         if (m > latest) {
           latest = m;
           target = b;
         }
       }
-      target.jobs.push(...unknownJobs);
+      target.jobs.push(...unknown);
     }
-    for (const b of roleBuckets) entries.push(makeEntry(companyName, b.role, b.jobs));
+    for (const b of buckets) positions.push(makePosition(companyName, b.role, b.jobs));
   }
 
-  // Soonest upcoming interview first, then most recently received.
-  return entries.sort((a, b) => {
-    const ai = a.interview ? new Date(a.interview).getTime() : Infinity;
-    const bi = b.interview ? new Date(b.interview).getTime() : Infinity;
+  // Soonest interview first, then most recent activity.
+  return positions.sort((a, b) => {
+    const ai = a.nextInterview ? new Date(a.nextInterview).getTime() : Infinity;
+    const bi = b.nextInterview ? new Date(b.nextInterview).getTime() : Infinity;
     if (ai !== bi) return ai - bi;
-    return (b.received || "").localeCompare(a.received || "");
+    return (b.lastUpdate || "").localeCompare(a.lastUpdate || "");
   });
 }
 
@@ -185,7 +170,7 @@ export default function Dashboard() {
   const [jobs, setJobs] = useState<Job[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [savingKey, setSavingKey] = useState<string | null>(null);
-  const [filter, setFilter] = useState<Filter>("Invitations");
+  const [filter, setFilter] = useState<Filter>("Active");
 
   const load = useCallback(async () => {
     setError(null);
@@ -204,29 +189,46 @@ export default function Dashboard() {
     void load();
   }, [load]);
 
-  const entries = useMemo(() => buildEntries(jobs ?? []), [jobs]);
+  const positions = useMemo(() => buildPositions(jobs ?? []), [jobs]);
+  const matches = useCallback(
+    (p: Position): boolean => {
+      switch (filter) {
+        case "Active":
+          return !isTerminal(p);
+        case "Needs attention":
+          return p.stale || norm(p.category) === "invitation";
+        case "Rejected":
+          return norm(p.category) === "rejection" || norm(p.status) === "rejected";
+        default:
+          return true;
+      }
+    },
+    [filter],
+  );
   const counts: Record<Filter, number> = {
-    Invitations: entries.filter((e) => e.category === "Invitation").length,
-    All: entries.length,
+    Active: positions.filter((p) => !isTerminal(p)).length,
+    "Needs attention": positions.filter((p) => p.stale || norm(p.category) === "invitation").length,
+    Rejected: positions.filter(
+      (p) => norm(p.category) === "rejection" || norm(p.status) === "rejected",
+    ).length,
+    All: positions.length,
   };
-  const visible =
-    filter === "Invitations" ? entries.filter((e) => e.category === "Invitation") : entries;
+  const visible = positions.filter(matches);
 
-  async function changeStatus(entry: Entry, status: Status) {
-    setSavingKey(entry.key);
-    const ids = new Set(entry.threadIds);
-    setJobs((cur) => (cur ? cur.map((j) => (ids.has(j.threadId) ? { ...j, status } : j)) : cur));
+  async function changeStatus(p: Position, status: string) {
+    if (!p.latestThreadId) return;
+    setSavingKey(p.key);
+    // Optimistic: update the latest event's status (drives the position status).
+    setJobs((cur) =>
+      cur ? cur.map((j) => (j.threadId === p.latestThreadId ? { ...j, status } : j)) : cur,
+    );
     try {
-      await Promise.all(
-        entry.threadIds.map(async (tid) => {
-          const res = await fetch(`/api/jobs/${encodeURIComponent(tid)}`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ status }),
-          });
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        }),
-      );
+      const res = await fetch(`/api/jobs/${encodeURIComponent(p.latestThreadId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
     } catch {
       setError("Failed to update status — reloading.");
       await load();
@@ -241,7 +243,7 @@ export default function Dashboard() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-slate-900">Job Inbox Tracker</h1>
           <p className="text-sm text-slate-500">
-            Interview &amp; recruiter conversations detected from your Gmail.
+            Each position, with its current status from the latest email.
           </p>
         </div>
         <button
@@ -252,19 +254,20 @@ export default function Dashboard() {
         </button>
       </header>
 
-      {jobs !== null && entries.length > 0 && (
-        <div className="mb-4 inline-flex rounded-lg border border-slate-200 bg-white p-1 text-sm shadow-sm">
+      {jobs !== null && positions.length > 0 && (
+        <div className="mb-4 flex flex-wrap gap-1 rounded-lg border border-slate-200 bg-white p-1 text-sm shadow-sm">
           {FILTERS.map((f) => (
             <button
               key={f}
               onClick={() => setFilter(f)}
               className={`rounded-md px-3 py-1.5 font-medium transition ${
-                filter === f
-                  ? "bg-slate-900 text-white"
-                  : "text-slate-500 hover:text-slate-800"
+                filter === f ? "bg-slate-900 text-white" : "text-slate-500 hover:text-slate-800"
               }`}
             >
-              {f} <span className={filter === f ? "text-slate-300" : "text-slate-400"}>({counts[f]})</span>
+              {f}{" "}
+              <span className={filter === f ? "text-slate-300" : "text-slate-400"}>
+                ({counts[f]})
+              </span>
             </button>
           ))}
         </div>
@@ -272,7 +275,7 @@ export default function Dashboard() {
 
       {jobs === null && (
         <div className="rounded-xl border border-slate-200 bg-white p-10 text-center text-slate-500">
-          Loading opportunities…
+          Loading positions…
         </div>
       )}
 
@@ -282,22 +285,18 @@ export default function Dashboard() {
         </div>
       )}
 
-      {jobs !== null && entries.length === 0 && !error && (
+      {jobs !== null && positions.length === 0 && !error && (
         <div className="rounded-xl border border-dashed border-slate-300 bg-white p-10 text-center">
-          <p className="font-medium text-slate-900">No opportunities tracked yet</p>
+          <p className="font-medium text-slate-900">No positions tracked yet</p>
           <p className="mt-1 text-sm text-slate-500">
-            New interview &amp; recruiter emails will appear here automatically.
+            Application emails will appear here automatically.
           </p>
         </div>
       )}
 
-      {jobs !== null && entries.length > 0 && visible.length === 0 && !error && (
-        <div className="rounded-xl border border-dashed border-slate-300 bg-white p-10 text-center">
-          <p className="font-medium text-slate-900">No invitations yet</p>
-          <p className="mt-1 text-sm text-slate-500">
-            Emails inviting you to a call or interview will appear here. Switch to “All” to see
-            acknowledgements.
-          </p>
+      {jobs !== null && positions.length > 0 && visible.length === 0 && !error && (
+        <div className="rounded-xl border border-dashed border-slate-300 bg-white p-10 text-center text-slate-500">
+          Nothing in “{filter}”. Try another filter.
         </div>
       )}
 
@@ -309,32 +308,34 @@ export default function Dashboard() {
               <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
                 <tr>
                   <th className="px-4 py-3">Company / Position</th>
-                  <th className="px-4 py-3">Category</th>
-                  <th className="px-4 py-3">Type</th>
-                  <th className="px-4 py-3">Interview</th>
                   <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3">Next interview</th>
+                  <th className="px-4 py-3">Last update</th>
+                  <th className="px-4 py-3">Set status</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 text-slate-800">
-                {visible.map((e) => (
-                  <tr key={e.key} className="align-top">
+                {visible.map((p) => (
+                  <tr key={p.key} className="align-top">
                     <td className="px-4 py-3">
-                      <div className="font-medium text-slate-900">{e.company}</div>
-                      <div className="text-slate-500">{e.position}</div>
-                      {e.summary && <div className="mt-1 text-xs text-slate-400">{e.summary}</div>}
-                      {e.count > 1 && (
-                        <div className="mt-1 text-xs text-slate-400">{e.count} emails</div>
+                      <div className="font-medium text-slate-900">{p.company}</div>
+                      <div className="text-slate-500">{p.role}</div>
+                      {p.stale && <StaleBadge />}
+                      {p.rounds > 1 && (
+                        <div className="mt-1 text-xs text-slate-400">{p.rounds} emails</div>
                       )}
                     </td>
                     <td className="px-4 py-3">
-                      <CategoryBadge category={e.category} />
+                      <StatusBadge status={p.status} category={p.category} />
                     </td>
-                    <td className="px-4 py-3 whitespace-nowrap">{e.type || "—"}</td>
-                    <td className="px-4 py-3 whitespace-nowrap">{fmtDate(e.interview)}</td>
+                    <td className="px-4 py-3 whitespace-nowrap">{fmtDate(p.nextInterview)}</td>
+                    <td className="px-4 py-3 whitespace-nowrap text-slate-500">
+                      {fmtDay(p.lastUpdate)}
+                    </td>
                     <td className="px-4 py-3">
-                      <StatusControl
-                        entry={e}
-                        saving={savingKey === e.key}
+                      <OverrideSelect
+                        position={p}
+                        saving={savingKey === p.key}
                         onChange={changeStatus}
                       />
                     </td>
@@ -346,28 +347,29 @@ export default function Dashboard() {
 
           {/* Mobile cards */}
           <div className="space-y-3 sm:hidden">
-            {visible.map((e) => (
-              <div
-                key={e.key}
-                className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm"
-              >
+            {visible.map((p) => (
+              <div key={p.key} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
                 <div className="flex items-start justify-between gap-2">
                   <div>
-                    <div className="font-medium text-slate-900">{e.company}</div>
-                    <div className="text-sm text-slate-500">{e.position}</div>
+                    <div className="font-medium text-slate-900">{p.company}</div>
+                    <div className="text-sm text-slate-500">{p.role}</div>
                   </div>
-                  <CategoryBadge category={e.category} />
+                  <StatusBadge status={p.status} category={p.category} />
                 </div>
-                {e.summary && <p className="mt-2 text-xs text-slate-400">{e.summary}</p>}
+                {p.stale && <div className="mt-2"><StaleBadge /></div>}
                 <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-600">
-                  <span>{e.type || "—"}</span>
-                  {e.interview && (
-                    <span className="text-violet-700">📅 {fmtDate(e.interview)}</span>
+                  {p.nextInterview && (
+                    <span className="text-violet-700">📅 {fmtDate(p.nextInterview)}</span>
                   )}
-                  {e.count > 1 && <span className="text-slate-400">{e.count} emails</span>}
+                  <span className="text-slate-400">Updated {fmtDay(p.lastUpdate)}</span>
+                  {p.rounds > 1 && <span className="text-slate-400">{p.rounds} emails</span>}
                 </div>
                 <div className="mt-3">
-                  <StatusControl entry={e} saving={savingKey === e.key} onChange={changeStatus} />
+                  <OverrideSelect
+                    position={p}
+                    saving={savingKey === p.key}
+                    onChange={changeStatus}
+                  />
                 </div>
               </div>
             ))}
@@ -378,45 +380,46 @@ export default function Dashboard() {
   );
 }
 
-function CategoryBadge({ category }: { category: string }) {
+function StatusBadge({ status, category }: { status: string; category: string }) {
   const style = CATEGORY_STYLES[category] ?? CATEGORY_STYLES.Other;
   return (
     <span className={`whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium ${style}`}>
-      {category || "—"}
+      {status || "—"}
     </span>
   );
 }
 
-function StatusControl({
-  entry,
+function StaleBadge() {
+  return (
+    <span className="mt-1 inline-block whitespace-nowrap rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-900 ring-1 ring-amber-200">
+      ⏳ No response 2+ weeks — check
+    </span>
+  );
+}
+
+function OverrideSelect({
+  position,
   saving,
   onChange,
 }: {
-  entry: Entry;
+  position: Position;
   saving: boolean;
-  onChange: (entry: Entry, status: Status) => void;
+  onChange: (p: Position, status: string) => void;
 }) {
-  const style = STATUS_STYLES[entry.status] ?? "bg-slate-100 text-slate-700";
-  const known = STATUSES.includes(entry.status as Status);
   return (
-    <div className="inline-flex items-center gap-2">
-      <span className={`whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium ${style}`}>
-        {entry.status || "—"}
-      </span>
-      <select
-        aria-label="Change status"
-        disabled={saving}
-        value={known ? entry.status : ""}
-        onChange={(ev) => onChange(entry, ev.target.value as Status)}
-        className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-800 disabled:opacity-50"
-      >
-        {!known && <option value="">{entry.status || "—"}</option>}
-        {STATUSES.map((s) => (
-          <option key={s} value={s}>
-            {s}
-          </option>
-        ))}
-      </select>
-    </div>
+    <select
+      aria-label="Set status"
+      disabled={saving}
+      value=""
+      onChange={(e) => e.target.value && onChange(position, e.target.value)}
+      className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 disabled:opacity-50"
+    >
+      <option value="">Set status…</option>
+      {OVERRIDE_STATUSES.map((s) => (
+        <option key={s} value={s}>
+          {s}
+        </option>
+      ))}
+    </select>
   );
 }

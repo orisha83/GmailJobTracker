@@ -7,11 +7,21 @@
  */
 
 /**
- * Default bilingual (Hebrew + English) keyword filter. The time window is NOT
- * baked in here — the poller appends an `after:` bound for incremental scanning.
+ * Default bilingual (Hebrew + English) keyword filter — broad enough to catch
+ * the whole application lifecycle (acknowledgements, invitations, rejections),
+ * not just interview invites. The time window is NOT baked in here — the poller
+ * appends an `after:` bound for incremental scanning.
  */
 export const DEFAULT_SEARCH_QUERY =
-  "(interview OR ראיון OR תפקיד OR משרה OR גיוס OR HR OR call OR טלפוני OR שיחה)";
+  "(" +
+  // interview / scheduling
+  "interview OR call OR scheduling OR ראיון OR טלפוני OR שיחה OR לתאם OR זימון OR " +
+  // application lifecycle (acknowledgements + rejections live here)
+  "applying OR application OR applied OR candidate OR candidacy OR recruiting OR recruiter OR " +
+  'position OR role OR opportunity OR resume OR "thank you for applying" OR ' +
+  // roles / HR
+  "HR OR תפקיד OR משרה OR גיוס OR מועמד OR מועמדות OR מועמדותך OR \"קורות חיים\" OR קו\"ח OR דרושים" +
+  ")";
 
 /** YYYY/MM/DD floor for the very first scan (before a watermark exists). */
 function todayStartDate(): string {
@@ -61,10 +71,12 @@ export const config = {
     notifyEmail: env("NOTIFY_EMAIL") ?? "",
     // First-run floor (YYYY/MM/DD); after that the Sheet watermark takes over.
     startDate: env("INGEST_START_DATE") ?? todayStartDate(),
-    // flash-lite free tier ~15 req/min; cap each run at 10 with ~4.5s spacing
-    // to stay under it and within the serverless time budget. Rest drains next run.
+    // Max AI (Gemini) calls per run — the binding free-tier constraint (~20/day).
     maxPerRun: Number(env("MAX_PER_RUN") ?? "10"),
     throttleMs: Number(env("GEMINI_THROTTLE_MS") ?? "4500"),
+    // Max threads fetched+classified per run (rule classification is free, so
+    // this only bounds serverless time). Remainder defers to the next run.
+    maxFetchPerRun: Number(env("MAX_FETCH_PER_RUN") ?? "30"),
   },
   // Protects /api/cron/poll so only the scheduler can trigger ingestion.
   cronSecret: env("CRON_SECRET") ?? "",
