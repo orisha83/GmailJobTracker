@@ -128,6 +128,41 @@ function fmtDate(iso: string): string {
     ? iso
     : d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+// The model stores interview times as the candidate's local (Asia/Jerusalem)
+// wall-clock numerals — but inconsistently tags them (sometimes "Z"). We treat
+// the numerals as the source of truth and ignore any timezone designator, so
+// the displayed time matches what the candidate was told regardless of viewer tz.
+function wallClockParts(
+  s: string,
+): { y: number; mo: number; d: number; h: number; mi: number } | null {
+  const m = (s || "")
+    .trim()
+    .match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
+  if (!m) return null;
+  return {
+    y: +m[1],
+    mo: +m[2],
+    d: +m[3],
+    h: +m[4],
+    mi: +m[5],
+  };
+}
+/** Comparable value in a single consistent frame (treats wall-clock as UTC). */
+function wallClockMs(s: string): number {
+  const p = wallClockParts(s);
+  return p ? Date.UTC(p.y, p.mo - 1, p.d, p.h, p.mi) : NaN;
+}
+function fmtInterview(s: string): string {
+  if (!s) return "—";
+  const p = wallClockParts(s);
+  if (!p) return s;
+  const ampm = p.h >= 12 ? "PM" : "AM";
+  const h12 = p.h % 12 === 0 ? 12 : p.h % 12;
+  const mm = String(p.mi).padStart(2, "0");
+  return `${MONTHS[p.mo - 1]} ${p.d}, ${p.y}, ${h12}:${mm} ${ampm}`;
+}
 function fmtDay(iso: string): string {
   if (!iso) return "—";
   const d = new Date(iso);
@@ -138,14 +173,30 @@ function daysSince(iso: string): number {
   return isNaN(t) ? 0 : (Date.now() - t) / 86_400_000;
 }
 
+// Candidate's timezone — interview wall-clock times are interpreted in this zone.
+const DISPLAY_TZ = "Asia/Jerusalem";
+/** "Now" expressed in DISPLAY_TZ wall-clock, in the same UTC-as-frame units as wallClockMs. */
+function nowWallClockMs(): number {
+  const p = new Intl.DateTimeFormat("en-CA", {
+    timeZone: DISPLAY_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date());
+  const g = (t: string) => +(p.find((x) => x.type === t)?.value ?? "0");
+  return Date.UTC(g("year"), g("month") - 1, g("day"), g("hour") === 24 ? 0 : g("hour"), g("minute"));
+}
 function pickInterview(jobs: Job[]): string {
   const times = jobs
     .map((j) => j.interviewDateTime)
     .filter(Boolean)
-    .map((s) => ({ s, t: new Date(s).getTime() }))
+    .map((s) => ({ s, t: wallClockMs(s) }))
     .filter((x) => !isNaN(x.t));
   if (!times.length) return "";
-  const now = Date.now();
+  const now = nowWallClockMs();
   const upcoming = times.filter((x) => x.t >= now).sort((a, b) => a.t - b.t);
   return (upcoming[0] ?? times.sort((a, b) => b.t - a.t)[0]).s;
 }
@@ -274,8 +325,8 @@ function buildPositions(jobs: Job[]): Position[] {
 
   // Soonest interview first, then most recent activity.
   return positions.sort((a, b) => {
-    const ai = a.nextInterview ? new Date(a.nextInterview).getTime() : Infinity;
-    const bi = b.nextInterview ? new Date(b.nextInterview).getTime() : Infinity;
+    const ai = a.nextInterview ? wallClockMs(a.nextInterview) : Infinity;
+    const bi = b.nextInterview ? wallClockMs(b.nextInterview) : Infinity;
     if (ai !== bi) return ai - bi;
     return (b.lastUpdate || "").localeCompare(a.lastUpdate || "");
   });
@@ -286,9 +337,11 @@ export default function Dashboard() {
   const [error, setError] = useState<string | null>(null);
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("Active");
+  const [loading, setLoading] = useState(false);
 
   const load = useCallback(async () => {
     setError(null);
+    setLoading(true);
     try {
       const res = await fetch("/api/jobs", { cache: "no-store" });
       const data = await res.json();
@@ -297,6 +350,8 @@ export default function Dashboard() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setJobs([]);
+    } finally {
+      setLoading(false);
     }
   }, []);
 
@@ -363,9 +418,16 @@ export default function Dashboard() {
         </div>
         <button
           onClick={() => load()}
-          className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50"
+          disabled={loading}
+          className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-60"
         >
-          Refresh
+          {loading && (
+            <span
+              aria-hidden
+              className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-300 border-t-slate-600"
+            />
+          )}
+          {loading ? "Refreshing…" : "Refresh"}
         </button>
       </header>
 
@@ -443,7 +505,7 @@ export default function Dashboard() {
                     <td className="px-4 py-3">
                       <StatusBadge status={p.status} category={p.category} />
                     </td>
-                    <td className="px-4 py-3 whitespace-nowrap">{fmtDate(p.nextInterview)}</td>
+                    <td className="px-4 py-3 whitespace-nowrap">{fmtInterview(p.nextInterview)}</td>
                     <td className="px-4 py-3 whitespace-nowrap text-slate-500">
                       {fmtDay(p.lastUpdate)}
                     </td>
@@ -474,7 +536,7 @@ export default function Dashboard() {
                 {p.stale && <div className="mt-2"><StaleBadge /></div>}
                 <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-600">
                   {p.nextInterview && (
-                    <span className="text-violet-700">📅 {fmtDate(p.nextInterview)}</span>
+                    <span className="text-violet-700">📅 {fmtInterview(p.nextInterview)}</span>
                   )}
                   <span className="text-slate-400">Updated {fmtDay(p.lastUpdate)}</span>
                   {p.rounds > 1 && <span className="text-slate-400">{p.rounds} emails</span>}

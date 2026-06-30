@@ -30,7 +30,7 @@ const OUTPUT_SCHEMA = {
       enum: ["Invitation", "Applied", "Rejection", "Offer", "Other"],
     },
     step: { type: "string" },
-    interview_datetime: { type: "string" }, // ISO 8601, or "" if none
+    interview_datetime: { type: "string" }, // local wall-clock "YYYY-MM-DDTHH:MM:SS" (no timezone), or "" if none
     summary: { type: "string" },
   },
 } as const;
@@ -54,7 +54,7 @@ Set "is_relevant" false for anything not about this candidate's own job applicat
 
 "step": a SHORT label (2-4 words) for this email's step, used as the status — identify the round/who when stated: "Applied", "Recruiter call", "HR screen", "Phone interview", "Hiring manager interview", "PM interview", "VP interview", "CEO interview", "Technical interview", "Home assignment", "Final round", "Offer", "Rejected".
 
-"interview_datetime": if a specific date/time is proposed (resolve relative phrases using the received date ${input.emailDate}); else "".
+"interview_datetime": if a specific date/time is proposed, output it as the interview's LOCAL time in the candidate's timezone (${config.ingest.timezone}), formatted "YYYY-MM-DDTHH:MM:SS" with NO "Z" and NO timezone offset. Use the time exactly as shown to the candidate in the email; if the email states a different timezone, convert it to ${config.ingest.timezone}. Never output UTC. Resolve relative phrases ("tomorrow at 3pm") using the received date ${input.emailDate}. If no specific time, output "".
 
 "summary": one English sentence on what the email says/requests.
 
