@@ -56,10 +56,50 @@ const CATEGORY_STYLES: Record<string, string> = {
 };
 
 const norm = (s: string) => (s || "").trim().toLowerCase();
+// Placeholder roles the model emits when it can't find a title — treat as unknown
+// so they fold into the real position instead of splitting off their own card.
+const PLACEHOLDER_ROLES = new Set([
+  "unknown",
+  "n/a",
+  "na",
+  "none",
+  "not specified",
+  "unspecified",
+  "not specified in the email",
+  "not mentioned",
+  "—",
+  "-",
+]);
 const isRealRole = (role: string) => {
   const r = norm(role);
-  return r !== "" && r !== "unknown";
+  return r !== "" && !PLACEHOLDER_ROLES.has(r);
 };
+// Levenshtein distance ≤1 check (used to merge AI spelling variants of one company).
+function within1Edit(a: string, b: string): boolean {
+  if (a === b) return true;
+  const la = a.length;
+  const lb = b.length;
+  if (Math.abs(la - lb) > 1) return false;
+  let i = 0;
+  let j = 0;
+  let edits = 0;
+  while (i < la && j < lb) {
+    if (a[i] === b[j]) {
+      i++;
+      j++;
+      continue;
+    }
+    if (++edits > 1) return false;
+    if (la > lb) i++;
+    else if (lb > la) j++;
+    else {
+      i++;
+      j++;
+    }
+  }
+  if (i < la || j < lb) edits++;
+  return edits <= 1;
+}
 const TERMINAL = new Set(["rejection", "offer", "rejected", "withdrawn", "archived"]);
 const isTerminal = (p: { category: string; status: string }) =>
   TERMINAL.has(norm(p.category)) || TERMINAL.has(norm(p.status));
@@ -144,8 +184,28 @@ function buildPositions(jobs: Job[]): Position[] {
     byCompany.set(k, arr);
   }
 
+  // Merge keys that are AI spelling variants of one company (e.g. appflyer ↔
+  // appsflyer). Bigger groups win the canonical key; only keys ≥6 chars and
+  // within one edit are merged, so distinct short names stay separate.
+  const ordered = [...byCompany.entries()].sort((a, b) => b[1].length - a[1].length);
+  const merged = new Map<string, Job[]>();
+  for (const [key, group] of ordered) {
+    let canonical = key;
+    if (key.length >= 6 && key !== "unknown") {
+      for (const existing of merged.keys()) {
+        if (existing.length >= 6 && within1Edit(existing, key)) {
+          canonical = existing;
+          break;
+        }
+      }
+    }
+    const arr = merged.get(canonical) ?? [];
+    arr.push(...group);
+    merged.set(canonical, arr);
+  }
+
   const positions: Position[] = [];
-  for (const group of byCompany.values()) {
+  for (const group of merged.values()) {
     const companyName = bestCompanyName(group);
     const realRoles = Array.from(
       new Map(
