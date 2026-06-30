@@ -131,6 +131,7 @@ export async function runPoll(analyzer: EmailAnalyzer = getAnalyzer()): Promise<
         source: "ai",
         threadId,
         link: analysis.apply_url ?? "",
+        interviewer: analysis.interviewer_name ?? "",
       });
       // Interviews and offers are action-worthy → bundle into the digest.
       if (analysis.category === "Invitation" || analysis.category === "Offer") {

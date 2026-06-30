@@ -44,6 +44,8 @@ export interface Analysis {
   summary: string;
   /** Best job-posting / careers / company URL from the email, or "" if none. */
   apply_url: string;
+  /** Full name of the person the candidate will interview with, or "" if not stated. */
+  interviewer_name: string;
 }
 
 export interface EmailAnalyzer {
@@ -109,5 +111,7 @@ export function normalizeAnalysis(raw: unknown): Analysis | null {
       typeof r.apply_url === "string" && /^https?:\/\//i.test(r.apply_url.trim())
         ? r.apply_url.trim()
         : "",
+    interviewer_name:
+      typeof r.interviewer_name === "string" ? r.interviewer_name.trim() : "",
   };
 }

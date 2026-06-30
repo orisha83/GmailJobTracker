@@ -39,6 +39,8 @@ If the email proposes a specific date/time (incl. relative phrases like "next Tu
 
 "apply_url": from the Candidate links below, choose the SINGLE URL that best points to this specific job posting / application portal / company careers page or site. Ignore unsubscribe, social, login, and tracking links. Use "" if none fits or the list is empty. Output the URL exactly as listed — never invent one.
 
+"interviewer_name": the full name of the person the candidate will interview with / meet, if explicitly stated (e.g. "You'll meet with Jane Doe"). This is the INTERVIEWER, not the recruiter, coordinator, or sender. Use "" if no interviewer is clearly named.
+
 Email Subject: ${input.subject}
 Email Body: ${body}
 Candidate links:${input.links?.length ? "\n" + input.links.map((l) => `- ${l}`).join("\n") : " (none)"}
@@ -52,7 +54,8 @@ Respond ONLY with a valid JSON object (no markdown fences) using exactly this st
   "step": "short step label",
   "interview_datetime": "ISO 8601 string or null",
   "summary": "One-sentence English summary of what the email says / requests",
-  "apply_url": "best job/careers URL from the candidate links, or empty string"
+  "apply_url": "best job/careers URL from the candidate links, or empty string",
+  "interviewer_name": "full name of the interviewer if stated, or empty string"
 }`;
 }
 

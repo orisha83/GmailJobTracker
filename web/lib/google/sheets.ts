@@ -45,9 +45,11 @@ export interface TrackedJob {
   threadId: string;
   /** Best job/careers/position URL extracted from the email, or "". */
   link: string;
+  /** Full name of the interviewer named in the email, or "". */
+  interviewer: string;
 }
 
-// Column order A..L. Status=I, ThreadID=K, Link=L.
+// Column order A..M. Status=I, ThreadID=K, Link=L, Interviewer=M.
 const HEADER = [
   "Received",
   "Company",
@@ -61,6 +63,7 @@ const HEADER = [
   "Source",
   "ThreadID",
   "Link",
+  "Interviewer",
 ];
 
 function sheetsClient(auth: OAuth2Client): sheets_v4.Sheets {
@@ -68,7 +71,7 @@ function sheetsClient(auth: OAuth2Client): sheets_v4.Sheets {
 }
 
 function dataRange(): string {
-  return `${config.sheets.dataSheet}!A:L`;
+  return `${config.sheets.dataSheet}!A:M`;
 }
 
 /** Reads all tracked opportunities (skips the header row). */
@@ -93,6 +96,7 @@ export async function readRows(auth: OAuth2Client): Promise<TrackedJob[]> {
     source: r[9] ?? "",
     threadId: r[10] ?? "",
     link: r[11] ?? "",
+    interviewer: r[12] ?? "",
   }));
 }
 
@@ -109,6 +113,7 @@ export interface NewJobRow {
   source: string;
   threadId: string;
   link: string;
+  interviewer: string;
 }
 
 function rowValues(job: NewJobRow): (string | number)[] {
@@ -125,6 +130,7 @@ function rowValues(job: NewJobRow): (string | number)[] {
     job.source,
     job.threadId,
     job.link,
+    job.interviewer,
   ];
 }
 
@@ -215,12 +221,12 @@ export async function ensureSheets(auth: OAuth2Client): Promise<void> {
   // Write the header on the data tab if A1 is empty.
   const head = await sheets.spreadsheets.values.get({
     spreadsheetId: config.sheets.spreadsheetId,
-    range: `${config.sheets.dataSheet}!A1:L1`,
+    range: `${config.sheets.dataSheet}!A1:M1`,
   });
   if (!head.data.values || head.data.values.length === 0) {
     await sheets.spreadsheets.values.update({
       spreadsheetId: config.sheets.spreadsheetId,
-      range: `${config.sheets.dataSheet}!A1:L1`,
+      range: `${config.sheets.dataSheet}!A1:M1`,
       valueInputOption: "RAW",
       requestBody: { values: [HEADER] },
     });

@@ -29,6 +29,7 @@ const OUTPUT_SCHEMA = {
     "interview_datetime",
     "summary",
     "apply_url",
+    "interviewer_name",
   ],
   properties: {
     is_relevant: { type: "boolean" },
@@ -42,6 +43,7 @@ const OUTPUT_SCHEMA = {
     interview_datetime: { type: "string" }, // local wall-clock "YYYY-MM-DDTHH:MM:SS" (no timezone), or "" if none
     summary: { type: "string" },
     apply_url: { type: "string" }, // best job/careers URL from the candidate links, or "" if none
+    interviewer_name: { type: "string" }, // full name of the interviewer if stated, else ""
   },
 } as const;
 
@@ -69,6 +71,8 @@ Set "is_relevant" false for anything not about this candidate's own job applicat
 "summary": one English sentence on what the email says/requests.
 
 "apply_url": from the Candidate links below, choose the SINGLE URL that best points to this specific job posting / application portal / company careers page or site. Ignore unsubscribe, social, login, and tracking links. Output "" if none of them fits or the list is empty. Output the URL exactly as listed — never invent one.
+
+"interviewer_name": the full name of the person the candidate will interview with / meet, if explicitly stated (e.g. "You'll meet with Jane Doe", "Your interviewer is John Smith"). This is the INTERVIEWER, not the recruiter, coordinator, or email sender. Output "" if no interviewer is clearly named.
 
 Subject: ${input.subject}
 Body: ${body}

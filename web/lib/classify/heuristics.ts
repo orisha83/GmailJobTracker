@@ -96,6 +96,7 @@ export function classifyHeuristically(msg: FetchedMessage): Analysis | null {
     role: extractRole(msg.subject),
     interview_datetime: null,
     apply_url: "",
+    interviewer_name: "",
   };
 
   // Rejections are terminal — classify even if some scheduling words appear.

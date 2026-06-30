@@ -28,6 +28,7 @@ interface Job {
   source: string;
   threadId: string;
   link: string;
+  interviewer: string;
 }
 
 /** A derived position = a company + role, built from its email events. */
@@ -44,6 +45,7 @@ interface Position {
   stale: boolean;
   latestThreadId: string;
   link: string; // best job/careers URL from the position's emails ("" if none)
+  interviewer: string; // named interviewer for the upcoming interview ("" if none)
 }
 
 type Filter = "Active" | "Needs attention" | "Rejected" | "All";
@@ -261,6 +263,7 @@ function makePosition(company: string, role: string, jobs: Job[]): Position {
   const byRecent = [...jobs].sort((a, b) => (b.received || "").localeCompare(a.received || ""));
   const latest = byRecent[0];
   const lastUpdate = latest?.received || "";
+  const nextInterview = pickInterview(jobs);
   const pos: Position = {
     key: `${norm(latest?.companyKey || company)}|${norm(role)}`,
     company,
@@ -269,11 +272,17 @@ function makePosition(company: string, role: string, jobs: Job[]): Position {
     category: latest?.category || "Other",
     summary: latest?.summary || "",
     lastUpdate,
-    nextInterview: pickInterview(jobs),
+    nextInterview,
     rounds: jobs.length,
     stale: false,
     latestThreadId: latest?.threadId || "",
     link: byRecent.find((j) => j.link)?.link || "",
+    // Prefer the interviewer named on the upcoming interview's email; else the most recent.
+    interviewer:
+      (nextInterview &&
+        jobs.find((j) => j.interviewDateTime === nextInterview && j.interviewer)?.interviewer) ||
+      byRecent.find((j) => j.interviewer)?.interviewer ||
+      "",
   };
   pos.stale = !isTerminal(pos) && daysSince(lastUpdate) > STALE_DAYS;
   return pos;
@@ -609,6 +618,7 @@ export default function Dashboard() {
                     </td>
                     <td className="px-4 py-3 whitespace-nowrap">
                       <NextInterview position={p} />
+                      <Interviewer position={p} />
                     </td>
                     <td className="px-4 py-3 whitespace-nowrap text-slate-500">
                       {fmtDay(p.lastUpdate)}
@@ -645,6 +655,20 @@ export default function Dashboard() {
                   {p.nextInterview && (
                     <span className="text-violet-700">
                       📅 <NextInterview position={p} />
+                    </span>
+                  )}
+                  {p.interviewer && (
+                    <span>
+                      👤{" "}
+                      <a
+                        href={linkedinUrl(p.interviewer, p.company)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="hover:underline"
+                        title="Find on LinkedIn"
+                      >
+                        {p.interviewer}
+                      </a>
                     </span>
                   )}
                   <span className="text-slate-400">Updated {fmtDay(p.lastUpdate)}</span>
@@ -717,6 +741,32 @@ function CompanyLogo({ position }: { position: Position }) {
   return (
     <div className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded bg-slate-200 text-[10px] font-semibold text-slate-600">
       {letter}
+    </div>
+  );
+}
+
+/** Pre-filled LinkedIn people-search for an interviewer (name + company narrows it). */
+function linkedinUrl(name: string, company: string): string {
+  const kw = [name, company].filter(Boolean).join(" ");
+  return `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(kw)}`;
+}
+
+/** Named interviewer (when stated) → link to find them on LinkedIn. Renders nothing
+ *  when no interviewer was named. */
+function Interviewer({ position }: { position: Position }) {
+  if (!position.interviewer) return null;
+  return (
+    <div className="text-slate-500">
+      👤{" "}
+      <a
+        href={linkedinUrl(position.interviewer, position.company)}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="hover:underline"
+        title="Find on LinkedIn"
+      >
+        {position.interviewer}
+      </a>
     </div>
   );
 }
