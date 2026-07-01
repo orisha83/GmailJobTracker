@@ -60,7 +60,10 @@ export async function runPoll(analyzer: EmailAnalyzer = getAnalyzer()): Promise<
     lastChecked != null
       ? `after:${Math.max(0, lastChecked - OVERLAP_SECONDS)}`
       : `after:${config.ingest.startDate}`;
-  const query = `${config.ingest.searchQuery} ${timeBound}`;
+  // Exclude our own digest emails: they land in this same inbox and match the
+  // keyword query, so without this they'd be re-ingested as new "invitations"
+  // and trigger another digest — an hourly self-notification loop.
+  const query = `${config.ingest.searchQuery} ${timeBound} -from:me`;
   const runStartedEpoch = Math.floor(Date.now() / 1000);
 
   const result: PollResult = {
@@ -97,6 +100,15 @@ export async function runPoll(analyzer: EmailAnalyzer = getAnalyzer()): Promise<
     const message = await fetchMessage(auth, latestMessageId);
     if (!message) {
       result.failed++;
+      continue;
+    }
+
+    // Backstop for the self-notification loop (in case -from:me misses it, e.g.
+    // an alias/forward): never analyze or alert on our own digests — just record
+    // the thread as processed so it's not re-scanned.
+    if (message.isSelfNotification) {
+      result.skipped++;
+      processedIds.push(threadId);
       continue;
     }
 

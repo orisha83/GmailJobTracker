@@ -18,7 +18,15 @@ export interface FetchedMessage {
   /** Candidate URLs found in the email (anchors + plain-text), filtered of junk.
    *  The AI picks the best job/careers link from these. */
   links: string[];
+  /** True if this is one of our own digest emails (carries the X-Job-Tracker
+   *  header) — never treat it as job mail, else we'd loop on our own alerts. */
+  isSelfNotification: boolean;
 }
+
+// Custom header stamped on our digest emails so ingestion can recognize and
+// skip them (they land in the same inbox we scan). See sendEmail / fetchMessage.
+export const NOTIFICATION_HEADER = "X-Job-Tracker";
+export const NOTIFICATION_HEADER_VALUE = "notification";
 
 /** Parses a From header like `"Acme Careers" <jobs@acme.com>` into name + domain. */
 function parseFrom(from: string): { name: string; domain: string } {
@@ -141,6 +149,10 @@ export async function fetchMessage(
         headers.find((h) => h.name?.toLowerCase() === "date")?.value ?? Date.now(),
       ).toISOString();
 
+  const isSelfNotification =
+    headers.find((h) => h.name?.toLowerCase() === NOTIFICATION_HEADER.toLowerCase())?.value ===
+    NOTIFICATION_HEADER_VALUE;
+
   return {
     id,
     subject,
@@ -149,6 +161,7 @@ export async function fetchMessage(
     senderName,
     senderDomain,
     links: extractLinks(msg.payload),
+    isSelfNotification,
   };
 }
 
@@ -165,6 +178,8 @@ export async function sendEmail(
   const raw = [
     `To: ${to}`,
     `Subject: ${encodedSubject}`,
+    // Stamp our own alerts so ingestion can skip them (they hit the same inbox).
+    `${NOTIFICATION_HEADER}: ${NOTIFICATION_HEADER_VALUE}`,
     "Content-Type: text/plain; charset=UTF-8",
     "",
     body,
