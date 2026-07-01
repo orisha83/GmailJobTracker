@@ -29,6 +29,8 @@ Classify "category":
 
 "step": a SHORT label (2-4 words) describing this specific step, used as the position's status. Identify the interview round / who it's with when stated, e.g. "HR screen", "Phone screen", "Recruiter call", "Hiring manager interview", "PM interview", "VP interview", "CEO interview", "Technical interview", "Home assignment", "Final round". For Applied use "Applied"; Rejection "Rejected"; Offer "Offer".
 
+"role": the job title the CANDIDATE applied to / is interviewing for — from the position description in the subject/body (e.g. "the Product Manager, Payments position"). NOT the interviewer's, recruiter's, or sender's own job title (e.g. "You'll meet Jane Doe, Director of Product" => Jane Doe is the interviewer, NOT the role). Keep the wording consistent across a thread.
+
 Crucial — conditional/future contact is NOT an invitation:
 - "We received your CV; if there's a match we'll contact you for a call." => category "Applied".
 - "We'd like to schedule a 30-min call this week — what times work?" => "Invitation", step e.g. "Recruiter call".

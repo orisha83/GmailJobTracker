@@ -55,7 +55,7 @@ Set "is_relevant" false for anything not about this candidate's own job applicat
 
 "company": the HIRING company the candidate applied to — take it from the email body/signature (e.g. "the Product Manager position at Blockaid", "Blockaid Talent Team"), NOT the sender's personal name. A recruiter (a person) often sends on behalf of the company; report the company, not the recruiter. Sender hints — name: "${input.senderName ?? ""}", domain: "${input.senderDomain ?? ""}". Translate to English if Hebrew.
 
-"role": the job title (English).
+"role": the job title the CANDIDATE applied to / is interviewing for — take it from the position description in the subject/body (e.g. "the Product Manager, Payments position"). NOT the interviewer's, recruiter's, or sender's own job title (e.g. "You'll meet Jane Doe, Director of Product" => the interviewer is Jane Doe, NOT the role). Keep the wording consistent across a thread. English.
 
 "category":
 - "Invitation": asks the candidate to act now — schedule/attend an interview, phone/HR screen, or do a home assignment.

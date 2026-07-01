@@ -116,11 +116,6 @@ function sameCompany(a: string, b: string): boolean {
 // Role word-set, used to fold a generic role into a more specific one
 // ("Product Manager" ⊂ "Product Manager, Payments").
 const roleTokens = (role: string) => new Set(norm(role).split(/[^a-z0-9]+/).filter(Boolean));
-const isSubset = (a: Set<string>, b: Set<string>) => {
-  if (a.size === 0 || a.size > b.size) return false;
-  for (const t of a) if (!b.has(t)) return false;
-  return true;
-};
 const TERMINAL = new Set(["rejection", "offer", "rejected", "withdrawn", "archived"]);
 const isTerminal = (p: { category: string; status: string }) =>
   TERMINAL.has(norm(p.category)) || TERMINAL.has(norm(p.status));
@@ -265,7 +260,9 @@ function makePosition(company: string, role: string, jobs: Job[]): Position {
   const lastUpdate = latest?.received || "";
   const nextInterview = pickInterview(jobs);
   const pos: Position = {
-    key: `${norm(latest?.companyKey || company)}|${norm(role)}`,
+    // Include the latest thread id so two segments of one company (e.g.
+    // applied → rejected → re-applied to the same role) never collide.
+    key: `${norm(latest?.companyKey || company)}|${norm(role)}|${latest?.threadId ?? ""}`,
     company,
     role: role || "—",
     status: latest?.status || latest?.step || "Applied",
@@ -308,7 +305,29 @@ function bestCompanyName(group: Job[]): string {
   return best || group.find((j) => j.company?.trim())?.company?.trim() || "Unknown";
 }
 
-/** Group events into positions: by company (+ distinct real role; Unknown folds in). */
+const REJECTED_STATUS = new Set(["rejected", "withdrawn", "archived"]);
+// A rejection (or a manual reject/withdraw/archive) closes a position; any later
+// activity begins a fresh one. Offer is deliberately NOT a boundary.
+const isRejectedEvent = (j: { category: string; status: string }) =>
+  norm(j.category) === "rejection" || REJECTED_STATUS.has(norm(j.status));
+
+// A segment's role label = the most-specific real role (largest word-set),
+// tie-broken by frequency then recency; "" if the segment has no real title.
+function pickSegmentRole(jobs: Job[]): string {
+  const real = jobs.filter((j) => isRealRole(j.role));
+  if (!real.length) return "";
+  const freq = new Map<string, number>();
+  for (const j of real) freq.set(norm(j.role), (freq.get(norm(j.role)) ?? 0) + 1);
+  return [...real].sort((a, b) => {
+    const t = roleTokens(b.role).size - roleTokens(a.role).size;
+    if (t) return t;
+    const f = (freq.get(norm(b.role)) ?? 0) - (freq.get(norm(a.role)) ?? 0);
+    if (f) return f;
+    return (b.received || "").localeCompare(a.received || "");
+  })[0].role.trim();
+}
+
+/** Group events into positions: one card per company, split at each rejection. */
 function buildPositions(jobs: Job[]): Position[] {
   const byCompany = new Map<string, Job[]>();
   for (const j of jobs) {
@@ -342,51 +361,23 @@ function buildPositions(jobs: Job[]): Position[] {
   for (const group of merged.values()) {
     const companyName = bestCompanyName(group);
 
-    // Distinct real roles, most-specific (largest word-set) first, so a generic
-    // role ("Product Manager") folds into a specific one ("Product Manager,
-    // Payments") rather than splitting into its own card.
-    const distinct = Array.from(
-      new Map(
-        group.filter((j) => isRealRole(j.role)).map((j) => [norm(j.role), j.role.trim()]),
-      ).values(),
-    ).sort((a, b) => roleTokens(b).size - roleTokens(a).size);
-
-    type Bucket = { role: string; tokens: Set<string>; jobs: Job[] };
-    const buckets: Bucket[] = [];
-    const labelToBucket = new Map<string, Bucket>();
-    for (const role of distinct) {
-      const tokens = roleTokens(role);
-      let bucket = buckets.find((b) => isSubset(tokens, b.tokens));
-      if (!bucket) {
-        bucket = { role, tokens, jobs: [] };
-        buckets.push(bucket);
+    // One card per company by default. Walk events oldest→newest and close a
+    // segment after each rejection, so activity that arrives after a rejection
+    // (a later re-application to the same company) starts a fresh card.
+    const chronological = [...group].sort((a, b) =>
+      (a.received || "").localeCompare(b.received || ""),
+    );
+    let segment: Job[] = [];
+    for (const j of chronological) {
+      segment.push(j);
+      if (isRejectedEvent(j)) {
+        positions.push(makePosition(companyName, pickSegmentRole(segment), segment));
+        segment = [];
       }
-      labelToBucket.set(norm(role), bucket);
     }
-
-    if (buckets.length <= 1) {
-      positions.push(makePosition(companyName, buckets[0]?.role ?? "", group));
-      continue;
+    if (segment.length) {
+      positions.push(makePosition(companyName, pickSegmentRole(segment), segment));
     }
-
-    for (const j of group) {
-      if (isRealRole(j.role)) labelToBucket.get(norm(j.role))?.jobs.push(j);
-    }
-    // Fold placeholder-role emails (calendar invites, etc.) into the latest bucket.
-    const unknown = group.filter((j) => !isRealRole(j.role));
-    if (unknown.length) {
-      let target = buckets[0];
-      let latest = "";
-      for (const b of buckets) {
-        const m = b.jobs.reduce((x, j) => ((j.received || "") > x ? j.received || "" : x), "");
-        if (m > latest) {
-          latest = m;
-          target = b;
-        }
-      }
-      target.jobs.push(...unknown);
-    }
-    for (const b of buckets) positions.push(makePosition(companyName, b.role, b.jobs));
   }
 
   // Soonest interview first, then most recent activity.
