@@ -4,9 +4,12 @@ The ingestion endpoint is `GET /api/cron/poll`, protected by the `CRON_SECRET`
 (`Authorization: Bearer <CRON_SECRET>`). It is **safe to call often** — runs only spend Gemini
 quota on *new* conversations (already-processed threads are skipped with no AI call).
 
-**Free-tier fit:** Gemini free tier = ~20 requests/day per model. `MAX_PER_RUN=3` × 7 daily runs
-(08,10,12,14,16,18,20) ≈ 21 capacity, so a normal day stays within budget; overflow defers to the
-next run/day automatically.
+**Free-tier fit:** the default model is `gemini-2.5-flash-lite` (free tier ~1000 requests/day,
+15/min). A rules pre-filter classifies templated acknowledgements and rejections for free (no AI
+call), so only genuine interview invitations/offers spend quota — a normal day uses a small fraction
+of the budget. `MAX_PER_RUN` caps AI calls per run; overflow defers to the next run automatically.
+Going hourly is just a one-line schedule change on cron-job.org (`0 * * * *`) and still fits
+comfortably.
 
 Target schedule in **UTC** (Jerusalem is UTC+3 in summer / +2 in winter):
 `0 5,7,9,11,13,15,17 * * *` → 08:00–20:00 local. (Accept ~1h drift across DST, or adjust the

@@ -2,8 +2,9 @@
  * Ingestion orchestration: Gmail search → dedup → AI classify → Sheet + notify.
  * Invoked by /api/cron/poll. See docs/ArchitectureLite.md §2.
  *
- * AI-first: every new conversation is classified by the model (Claude by default),
- * which identifies the hiring company, lifecycle category, step, and interview time.
+ * Rules-first: templated acknowledgements and rejections are classified for free
+ * by heuristics (no LLM call); mail with real interview/recruiter signal goes to the
+ * model (Gemini free tier by default) for company, category, step and interview time.
  * Positions are keyed on the normalized company NAME so a company's ack/interview/
  * rejection group together even across different sender domains (ATS vs corporate).
  */
@@ -22,16 +23,19 @@ import { notifyDigest, type AlertItem } from "@/lib/notify";
 import { config } from "@/lib/config";
 import type { EmailAnalyzer } from "@/lib/ai/analyzer";
 import { getAnalyzer } from "@/lib/ai";
+import { classifyHeuristically, looksLikeInvitation } from "@/lib/classify/heuristics";
 
 export interface PollResult {
-  scanned: number; // threads analyzed this run
-  skipped: number; // already processed
+  scanned: number; // threads handled this run (rule + ai)
+  skipped: number; // already processed, or our own digest email
   relevant: number; // logged
   invitations: number; // relevant AND category === "Invitation"
   offers: number; // relevant AND category === "Offer"
-  irrelevant: number; // model said not job-related
+  ruleClassified: number; // acks/rejections handled for free (no AI call)
+  aiCalls: number; // Gemini calls made (counts against the daily free quota)
+  irrelevant: number; // not job-related (model said so, or rule-skipped as noise)
   failed: number; // analyzer returned null (transient — retried next run)
-  deferred: number; // left for the next run (per-run cap reached)
+  deferred: number; // left for the next run (AI budget reached)
   query: string;
 }
 
@@ -72,6 +76,8 @@ export async function runPoll(analyzer: EmailAnalyzer = getAnalyzer()): Promise<
     relevant: 0,
     invitations: 0,
     offers: 0,
+    ruleClassified: 0,
+    aiCalls: 0,
     irrelevant: 0,
     failed: 0,
     deferred: 0,
@@ -92,11 +98,6 @@ export async function runPoll(analyzer: EmailAnalyzer = getAnalyzer()): Promise<
       result.skipped++;
       continue;
     }
-    if (result.scanned >= config.ingest.maxPerRun) {
-      result.deferred++;
-      continue; // not marked processed → handled next run
-    }
-
     const message = await fetchMessage(auth, latestMessageId);
     if (!message) {
       result.failed++;
@@ -105,28 +106,51 @@ export async function runPoll(analyzer: EmailAnalyzer = getAnalyzer()): Promise<
 
     // Backstop for the self-notification loop (in case -from:me misses it, e.g.
     // an alias/forward): never analyze or alert on our own digests — just record
-    // the thread as processed so it's not re-scanned.
+    // the thread as processed so it's not re-scanned. MUST stay ahead of any
+    // classification below so our own alerts never reach the rules or the AI.
     if (message.isSelfNotification) {
       result.skipped++;
       processedIds.push(threadId);
       continue;
     }
 
-    if (result.scanned > 0) await sleep(config.ingest.throttleMs);
-    result.scanned++;
-
-    const analysis = await analyzer.analyze({
-      subject: message.subject,
-      body: message.body,
-      emailDate: message.date,
-      senderName: message.senderName,
-      senderDomain: message.senderDomain,
-      links: message.links,
-    });
-    if (!analysis) {
-      result.failed++;
-      continue; // transient failure → retry next run (not marked processed)
+    // Rules-first: acks/rejections are classified for free (no LLM call, no
+    // throttle). Only mail with real interview/recruiter signal costs an AI call.
+    let analysis = classifyHeuristically(message);
+    let source = "rule";
+    if (analysis) {
+      result.ruleClassified++;
+    } else {
+      // Not an ack/rejection. Skip broad-query noise (newsletters etc.) for free
+      // so it never burns the daily AI budget; only signal-bearing mail hits AI.
+      if (!looksLikeInvitation(message)) {
+        result.irrelevant++;
+        processedIds.push(threadId); // settled → don't refetch it
+        continue;
+      }
+      // Needs AI, but the free quota is finite — defer once it's spent this run.
+      if (result.aiCalls >= config.ingest.maxPerRun) {
+        result.deferred++;
+        continue; // not marked processed → retried next run
+      }
+      if (result.aiCalls > 0) await sleep(config.ingest.throttleMs);
+      result.aiCalls++;
+      source = "ai";
+      analysis = await analyzer.analyze({
+        subject: message.subject,
+        body: message.body,
+        emailDate: message.date,
+        senderName: message.senderName,
+        senderDomain: message.senderDomain,
+        links: message.links,
+      });
+      if (!analysis) {
+        result.failed++;
+        continue; // transient failure → retry next run (not marked processed)
+      }
     }
+
+    result.scanned++;
 
     if (analysis.is_relevant) {
       const companyKey = companyKeyFor(analysis.company, message.senderDomain);
@@ -140,7 +164,7 @@ export async function runPoll(analyzer: EmailAnalyzer = getAnalyzer()): Promise<
         interviewDateTime: analysis.interview_datetime ?? "",
         summary: analysis.summary,
         status: analysis.step, // current status = this email's step (overridable)
-        source: "ai",
+        source,
         threadId,
         link: analysis.apply_url ?? "",
         interviewer: analysis.interviewer_name ?? "",

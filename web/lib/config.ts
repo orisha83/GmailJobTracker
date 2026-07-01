@@ -59,8 +59,10 @@ export const config = {
     processedSheet: env("SHEET_PROCESSED_TAB") ?? "Processed",
     metaSheet: env("SHEET_META_TAB") ?? "Meta",
   },
-  // Which analyzer to use: "claude" (default) or "gemini".
-  aiProvider: (env("AI_PROVIDER") ?? "claude").toLowerCase(),
+  // Which analyzer to use: "gemini" (default — free tier) or "claude" (paid).
+  // Default is Gemini so the tracker runs at $0 out of the box; set
+  // AI_PROVIDER=claude to opt into the paid Claude Haiku classifier.
+  aiProvider: (env("AI_PROVIDER") ?? "gemini").toLowerCase(),
   anthropic: {
     apiKey: env("ANTHROPIC_API_KEY") ?? "",
     model: env("ANTHROPIC_MODEL") ?? "claude-haiku-4-5",

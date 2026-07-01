@@ -23,7 +23,7 @@ const INVITATION_RE =
 // Broader interview/recruiter signal — used to decide whether an unclassified
 // email is worth an (expensive, capped) AI call vs. skipped as noise.
 const INTERVIEW_SIGNAL_RE =
-  /(interview|phone screen|screening|recruiter|talent acquisition|hiring manager|next step|move forward|schedule|availability|set up a|chat with|speak with|home assignment|assessment|ראיון|זימון|לתאם|שיחה (?:עם|טלפונית)|מעוניינים לראיין)/i;
+  /(interview|phone screen|screening|recruiter|talent acquisition|hiring manager|next step|move forward|schedule|availability|set up a|chat with|speak with|home assignment|assessment|offer|ראיון|זימון|לתאם|שיחה (?:עם|טלפונית)|מעוניינים לראיין|הצעת עבודה)/i;
 
 /**
  * Should an email the rules couldn't classify be sent to the AI? Only if it
