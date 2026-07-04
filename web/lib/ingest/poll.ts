@@ -11,6 +11,7 @@
 import { makeAuthedClient } from "@/lib/google/auth";
 import { searchMessages, fetchMessage } from "@/lib/google/gmail";
 import {
+  appendRawEmails,
   appendRows,
   ensureSheets,
   getLastChecked,
@@ -19,6 +20,7 @@ import {
   setLastChecked,
   type NewJobRow,
   type ProcessedEntry,
+  type RawEmail,
 } from "@/lib/google/sheets";
 import { notifyDigest, type AlertItem } from "@/lib/notify";
 import { config } from "@/lib/config";
@@ -92,6 +94,7 @@ export async function runPoll(analyzer: EmailAnalyzer = getAnalyzer()): Promise<
 
   // Batch writes + alerts; flush once at the end (Sheets write-quota friendly).
   const rowsToAppend: NewJobRow[] = [];
+  const rawToAppend: RawEmail[] = [];
   const processedIds: ProcessedEntry[] = [];
   const alerts: AlertItem[] = [];
 
@@ -168,6 +171,19 @@ export async function runPoll(analyzer: EmailAnalyzer = getAnalyzer()): Promise<
 
     result.scanned++;
 
+    // Cache what we classified (raw subject/body) so it can be re-analyzed
+    // offline later — a misclassification is fixable without re-reading Gmail.
+    rawToAppend.push({
+      messageId,
+      threadId,
+      received: message.date,
+      senderName: message.senderName,
+      senderDomain: message.senderDomain,
+      subject: message.subject,
+      body: message.body,
+      links: message.links,
+    });
+
     if (analysis.is_relevant) {
       const companyKey = companyKeyFor(analysis.company, message.senderDomain);
       rowsToAppend.push({
@@ -212,6 +228,7 @@ export async function runPoll(analyzer: EmailAnalyzer = getAnalyzer()): Promise<
 
   // Flush rows first, then processed markers (never mark processed unsaved), then alerts.
   await appendRows(auth, rowsToAppend);
+  await appendRawEmails(auth, rawToAppend);
   await markProcessedBatch(auth, processedIds);
   // One grouped digest, rate-limited to one email per window (holds overflow).
   await notifyDigest(auth, alerts);

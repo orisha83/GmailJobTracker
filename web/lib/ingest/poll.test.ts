@@ -16,6 +16,7 @@ vi.mock("@/lib/google/sheets", () => ({
   getProcessedIds: vi.fn(),
   markProcessedBatch: vi.fn(),
   appendRows: vi.fn(),
+  appendRawEmails: vi.fn(),
   setLastChecked: vi.fn(),
 }));
 vi.mock("@/lib/notify", () => ({ notifyDigest: vi.fn() }));
@@ -23,6 +24,7 @@ vi.mock("@/lib/notify", () => ({ notifyDigest: vi.fn() }));
 import { runPoll } from "./poll";
 import { searchMessages, fetchMessage } from "@/lib/google/gmail";
 import {
+  appendRawEmails,
   appendRows,
   getLastChecked,
   getProcessedIds,
@@ -182,6 +184,26 @@ describe("runPoll — per-message dedup (the missed-reply bug)", () => {
     expect(analyzer.analyze).not.toHaveBeenCalled();
     expect(fetchMessage).not.toHaveBeenCalled(); // cheap skip, no fetch
     expect(result.skipped).toBe(1);
+  });
+});
+
+describe("runPoll — raw email cache", () => {
+  it("caches classified messages (rule + ai) but not noise", async () => {
+    feed([
+      fm({ id: "a", subject: "Application received", body: "Thank you for applying." }),
+      fm({
+        id: "i",
+        subject: "Interview invite",
+        body: "We'd like to invite you to an interview. Please share your availability.",
+      }),
+      fm({ id: "n", subject: "Newsletter", body: "Read our latest engineering blog post." }),
+    ]);
+
+    await runPoll(spyAnalyzer(an({ category: "Invitation" })));
+
+    const cached = vi.mocked(appendRawEmails).mock.calls[0][1];
+    expect(cached.map((r) => r.messageId).sort()).toEqual(["a", "i"]);
+    expect(cached[0].body).toBeTruthy();
   });
 });
 

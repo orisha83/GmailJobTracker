@@ -182,6 +182,91 @@ export async function updateStatus(
   return true;
 }
 
+/** Raw email content cached at ingest so classification can be re-run offline
+ *  (no Gmail round-trip, no re-read quota) whenever the classifier improves. */
+export interface RawEmail {
+  messageId: string;
+  threadId: string;
+  received: string;
+  senderName: string;
+  senderDomain: string;
+  subject: string;
+  body: string;
+  links: string[];
+}
+
+// Matches the larger of the two analyzers' input truncations (Claude: 4000,
+// Gemini: 3000) — a cached body can always feed either model. Sheets cells
+// hold up to ~50k chars, so this is comfortably safe.
+const RAW_BODY_MAX = 4000;
+
+/** Appends raw emails to the hidden Raw tab (one batched write). */
+export async function appendRawEmails(auth: OAuth2Client, entries: RawEmail[]): Promise<void> {
+  if (entries.length === 0) return;
+  const sheets = sheetsClient(auth);
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: config.sheets.spreadsheetId,
+    range: `${config.sheets.rawSheet}!A:H`,
+    valueInputOption: "RAW",
+    requestBody: {
+      values: entries.map((e) => [
+        e.messageId,
+        e.threadId,
+        e.received,
+        e.senderName,
+        e.senderDomain,
+        e.subject,
+        (e.body || "").slice(0, RAW_BODY_MAX),
+        JSON.stringify((e.links ?? []).slice(0, 15)),
+      ]),
+    },
+  });
+}
+
+/** Reads the whole Raw cache, keyed by messageId. */
+export async function readRawEmails(auth: OAuth2Client): Promise<Map<string, RawEmail>> {
+  const sheets = sheetsClient(auth);
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: config.sheets.spreadsheetId,
+    range: `${config.sheets.rawSheet}!A:H`,
+  });
+  const map = new Map<string, RawEmail>();
+  for (const r of res.data.values ?? []) {
+    const messageId = (r[0] as string) ?? "";
+    if (!messageId) continue;
+    let links: unknown = [];
+    try {
+      links = JSON.parse((r[7] as string) || "[]");
+    } catch {
+      links = [];
+    }
+    map.set(messageId, {
+      messageId,
+      threadId: r[1] ?? "",
+      received: r[2] ?? "",
+      senderName: r[3] ?? "",
+      senderDomain: r[4] ?? "",
+      subject: r[5] ?? "",
+      body: r[6] ?? "",
+      links: Array.isArray(links) ? (links as string[]) : [],
+    });
+  }
+  return map;
+}
+
+/** Batched cell updates in one API call — used by the repair tools. */
+export async function batchUpdateValues(
+  auth: OAuth2Client,
+  data: { range: string; values: (string | number)[][] }[],
+): Promise<void> {
+  if (data.length === 0) return;
+  const sheets = sheetsClient(auth);
+  await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId: config.sheets.spreadsheetId,
+    requestBody: { valueInputOption: "USER_ENTERED", data },
+  });
+}
+
 /** One processed email: dedup on messageId; threadId kept for repair tools. */
 export interface ProcessedEntry {
   messageId: string;
