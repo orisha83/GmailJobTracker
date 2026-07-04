@@ -153,14 +153,23 @@ export async function appendRows(auth: OAuth2Client, jobs: NewJobRow[]): Promise
   });
 }
 
-/** Updates the Status cell (col I) for the row of the given thread. */
+/**
+ * Updates the Status cell (col I) for one row. `id` is a Gmail messageId
+ * (exact row) or, for pre-migration rows without one, a threadId — resolved to
+ * that thread's LATEST row, since that's the row the dashboard's derived
+ * status reads from.
+ */
 export async function updateStatus(
   auth: OAuth2Client,
-  threadId: string,
+  id: string,
   status: string,
 ): Promise<boolean> {
   const rows = await readRows(auth);
-  const match = rows.find((r) => r.threadId === threadId);
+  const match =
+    rows.find((r) => r.messageId === id) ??
+    rows
+      .filter((r) => r.threadId === id)
+      .sort((a, b) => (b.received || "").localeCompare(a.received || ""))[0];
   if (!match) return false;
 
   const sheets = sheetsClient(auth);
