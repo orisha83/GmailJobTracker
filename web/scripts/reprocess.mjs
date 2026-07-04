@@ -21,9 +21,9 @@ if (!secret) {
   process.exit(1);
 }
 
-const totals = { rowsExamined: 0, reclassified: 0, aiCalls: 0, backfilledRaw: 0, skippedNoRaw: 0 };
+const totals = { rowsExamined: 0, reclassified: 0, aiCalls: 0, backfilledRaw: 0, skippedNoRaw: 0, failed: 0 };
 const allChanges = [];
-let startRow;
+let startRow = args.includes("--start") ? Number(args[args.indexOf("--start") + 1]) : undefined;
 let pass = 0;
 
 for (;;) {
@@ -36,16 +36,21 @@ for (;;) {
   const report = await res.json();
   if (!res.ok || !report.ok) {
     console.error(`Pass ${pass} failed:`, report.error ?? `HTTP ${res.status}`);
+    if (startRow) console.error(`Resume later with: --start ${startRow}`);
     process.exit(1);
   }
 
   for (const k of Object.keys(totals)) totals[k] += report[k] ?? 0;
   allChanges.push(...(report.changes ?? []));
   console.log(
-    `pass ${pass}: rows ${report.rowsExamined}, AI calls ${report.aiCalls}, changes ${report.changes.length}${report.done ? "" : ` — continuing from row ${report.nextRow}`}`,
+    `pass ${pass}: rows ${report.rowsExamined}, AI calls ${report.aiCalls}, failed ${report.failed}, changes ${report.changes.length}${report.done ? "" : ` — continuing from row ${report.nextRow}`}`,
   );
 
   if (report.done) break;
+  if (report.nextRow === startRow && report.rowsExamined === 0) {
+    console.error(`No progress at row ${startRow} — aborting. Resume later with: --start ${startRow}`);
+    break;
+  }
   startRow = report.nextRow;
 }
 
@@ -63,5 +68,9 @@ if (allChanges.length === 0) {
 }
 console.log(
   `\nTotals: ${totals.rowsExamined} rows, ${totals.reclassified} reclassified, ${totals.aiCalls} AI calls, ` +
-    `${totals.backfilledRaw} raw bodies recovered, ${totals.skippedNoRaw} rows unrecoverable, ${allChanges.length} changes.`,
+    `${totals.backfilledRaw} raw bodies recovered, ${totals.skippedNoRaw} rows unrecoverable, ` +
+    `${totals.failed} AI failures, ${allChanges.length} changes.`,
 );
+if (totals.failed > 0) {
+  console.log("Some rows failed at the model (quota/safety) — re-run this script later to retry them.");
+}

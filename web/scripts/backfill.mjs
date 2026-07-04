@@ -46,6 +46,10 @@ for (;;) {
   );
 
   if (report.done) break;
+  if (report.nextIndex === startIndex && report.threadsScanned === 0 && report.messagesSeen === 0) {
+    console.error(`No progress at thread #${startIndex} — aborting. Re-run later to retry.`);
+    break;
+  }
   startIndex = report.nextIndex;
 }
 

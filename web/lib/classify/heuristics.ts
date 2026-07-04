@@ -18,7 +18,7 @@ const REJECTION_RE =
 
 // Strong, present-tense invitation language → don't shortcut; let the AI decide.
 const INVITATION_RE =
-  /(please (?:schedule|book|pick|select|choose|confirm)|book a (?:time|slot|call|meeting)|what times work|are you available|your availability|let'?s (?:set up|schedule|find a time)|set up a (?:call|meeting|chat)|schedule (?:a |an |your )?(?:call|interview|meeting|chat|time)|invite you to (?:an? )?(?:interview|call|meeting|chat)|invitation to (?:an? )?interview|complete the (?:assignment|task|assessment|exercise)|home assignment|technical (?:assessment|test|exercise)|calendly|cal\.com|נשמח לתאם|מוזמן(?:ת)? ל(?:ראיון|שיחה|פגישה)|זימון לראיון|לקבוע (?:שיחה|ראיון|פגישה))/i;
+  /(please (?:schedule|book|pick|select|choose|confirm)|book a (?:time|slot|call|meeting)|what times work|are you available|your availability|let'?s (?:set up|schedule|find a time)|set up a (?:call|meeting|chat)|schedule (?:a |an |your )?(?:call|interview|meeting|chat|time)|invite you to (?:an? |the )?(?:[\w-]+ )?(?:interview|call|meeting|chat)|invitation to (?:an? )?interview|complete the (?:assignment|task|assessment|exercise)|home assignment|technical (?:assessment|test|exercise)|calendly|cal\.com|נשמח לתאם|מוזמן(?:ת)? ל(?:ראיון|שיחה|פגישה)|זימון לראיון|לקבוע (?:שיחה|ראיון|פגישה))/i;
 
 // Broader interview/recruiter signal — used to decide whether an unclassified
 // email is worth an (expensive, capped) AI call vs. skipped as noise.

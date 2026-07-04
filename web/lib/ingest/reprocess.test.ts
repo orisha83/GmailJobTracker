@@ -15,6 +15,7 @@ vi.mock("@/lib/google/gmail", () => ({
   listThreadMessageIds: vi.fn(),
 }));
 vi.mock("@/lib/google/sheets", () => ({
+  ensureSheets: vi.fn(),
   readRows: vi.fn(),
   readRawEmails: vi.fn(),
   appendRawEmails: vi.fn(),
@@ -159,6 +160,65 @@ describe("runReprocess — apply semantics", () => {
     const updates = vi.mocked(batchUpdateValues).mock.calls[0][1];
     expect(updates.map((u) => u.range)).toEqual(["Tracker!E4:G4"]); // no I4
     expect(report.changes.some((c) => c.field === "status")).toBe(false);
+  });
+
+  it("a rule 'Applied' never downgrades an AI Invitation row (Kela protection)", async () => {
+    vi.mocked(readRows).mockResolvedValue([
+      row({
+        category: "Invitation",
+        step: "Phone interview",
+        interviewDateTime: "2026-07-02T12:00:00",
+      }),
+    ]);
+    // Pure ack text → rules classify Applied; the original AI saw more context.
+    vi.mocked(readRawEmails).mockResolvedValue(
+      new Map([["m1", raw({ subject: "Thanks", body: "Thank you for applying to KELA." })]]),
+    );
+    const analyzer = spyAnalyzer([invitation]);
+
+    const report = await runReprocess({ dryRun: false }, analyzer);
+
+    expect(analyzer.analyze).not.toHaveBeenCalled(); // rules matched
+    expect(report.changes).toEqual([]);
+    expect(vi.mocked(batchUpdateValues).mock.calls[0][1]).toEqual([]);
+  });
+
+  it("a rule result never clears an interview datetime the AI found", async () => {
+    vi.mocked(readRows).mockResolvedValue([
+      row({
+        category: "Applied",
+        step: "Application received",
+        interviewDateTime: "2026-07-09T10:00:00",
+      }),
+    ]);
+    vi.mocked(readRawEmails).mockResolvedValue(
+      new Map([["m1", raw({ subject: "Thanks", body: "Thank you for applying." })]]),
+    );
+
+    const report = await runReprocess({ dryRun: false }, spyAnalyzer([invitation]));
+
+    // Step label may normalize, but the datetime column is untouched.
+    expect(report.changes.some((c) => c.field === "interviewDateTime")).toBe(false);
+    const ranges = vi.mocked(batchUpdateValues).mock.calls[0][1];
+    const efg = ranges.find((u) => u.range.startsWith("Tracker!E"));
+    expect(efg?.values[0][2]).toBe("2026-07-09T10:00:00"); // G preserved
+  });
+
+  it("a rule 'Rejected' still corrects a missed rejection", async () => {
+    vi.mocked(readRows).mockResolvedValue([row({ category: "Applied", step: "Applied" })]);
+    vi.mocked(readRawEmails).mockResolvedValue(
+      new Map([
+        ["m1", raw({ subject: "Update", body: "Unfortunately we are moving forward with other candidates." })],
+      ]),
+    );
+
+    const report = await runReprocess({ dryRun: true }, spyAnalyzer([invitation]));
+
+    expect(report.changes.map((c) => `${c.field}:${c.newValue}`).sort()).toEqual([
+      "category:Rejection",
+      "status:Rejected",
+      "step:Rejected",
+    ]);
   });
 
   it("leaves rows without interview signal untouched (rules and gate say skip)", async () => {

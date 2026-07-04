@@ -5,12 +5,13 @@ The ingestion endpoint is `GET /api/cron/poll`, protected by the `CRON_SECRET`
 quota on *new* messages (already-processed message IDs are skipped with no AI call; dedup is
 per **message**, so a reply inside a tracked conversation still gets analyzed).
 
-**Free-tier fit:** the default model is `gemini-2.5-flash-lite` (free tier ~1000 requests/day,
-15/min). A rules pre-filter classifies templated acknowledgements and rejections for free (no AI
-call), so only genuine interview invitations/offers spend quota — a normal day uses a small fraction
-of the budget. `MAX_PER_RUN` caps AI calls per run; overflow defers to the next run automatically.
-The repair tools (`scripts/backfill.mjs`, `scripts/reprocess.mjs`) use the same per-invocation
-budget, so even a full historical repair fits within a day's quota.
+**Free-tier fit:** the default model is `gemini-2.5-flash-lite`. Google's free-tier daily caps
+are **per model** and can be very low (observed 2026-07: 20 requests/day per model). A rules
+pre-filter classifies templated acknowledgements and rejections for free (no AI call), so only
+genuine interview invitations/offers spend quota — a normal day fits. `MAX_PER_RUN` caps AI calls
+per run; overflow defers to the next run automatically and nothing is lost. For bulk repairs
+(`scripts/backfill.mjs`, `scripts/reprocess.mjs`) hop models via `GEMINI_MODEL` (each model id has
+its own daily allowance) or spread the run across days — both scripts resume where they stopped.
 
 **Active schedule:** cron-job.org calls the endpoint **hourly 08:00–20:00 Jerusalem time**.
 In **UTC** (Jerusalem is UTC+3 in summer / +2 in winter):

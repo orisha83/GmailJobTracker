@@ -16,6 +16,7 @@ vi.mock("@/lib/google/gmail", () => ({
   listThreadMessageIds: vi.fn(),
 }));
 vi.mock("@/lib/google/sheets", () => ({
+  ensureSheets: vi.fn(),
   readRows: vi.fn(),
   getProcessedIds: vi.fn(),
   appendRows: vi.fn(),

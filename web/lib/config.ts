@@ -72,8 +72,11 @@ export const config = {
   },
   gemini: {
     apiKey: env("GEMINI_API_KEY") ?? "",
-    // flash-lite: free tier ~1000 req/day & 15/min (vs only 20/day for
-    // gemini-2.5-flash). Plenty for an email tracker; swap via GEMINI_MODEL.
+    // Free-tier daily caps are PER MODEL and can be very low (observed:
+    // 20/day for gemini-2.5-flash-lite in 2026-07). Normal polling fits, but
+    // for a bulk repair (backfill/reprocess) hop models via GEMINI_MODEL —
+    // each model id has its own daily allowance. Deferred mail is retried
+    // next run, so hitting the cap loses nothing.
     model: env("GEMINI_MODEL") ?? "gemini-2.5-flash-lite",
   },
   ingest: {

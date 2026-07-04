@@ -21,6 +21,7 @@ import {
   appendRawEmails,
   appendRows,
   batchUpdateValues,
+  ensureSheets,
   getProcessedIds,
   markProcessedBatch,
   readRows,
@@ -65,6 +66,7 @@ export async function runBackfill(
   const startIndex = opts.startIndex ?? 0;
 
   const auth = makeAuthedClient();
+  await ensureSheets(auth); // the Raw tab may not exist yet on older sheets
   const rows = await readRows(auth);
   const processed = await getProcessedIds(auth);
 

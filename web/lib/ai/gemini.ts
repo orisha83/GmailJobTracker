@@ -42,7 +42,7 @@ Crucial — the word "offer" around an interview is NOT a job offer:
 - "Attached is your offer letter; base salary and start date inside." / "מצורפת הצעת השכר" => "Offer".
 
 The email was received at: ${input.emailDate} (timezone ${timezone}).
-If the email proposes a specific date/time (incl. relative phrases like "next Tuesday at 3pm"), resolve it to an absolute ISO 8601 timestamp using the received date. Otherwise null.
+"interview_datetime": if a specific date/time is proposed, output the interview's LOCAL time in the candidate's timezone (${timezone}), formatted "YYYY-MM-DDTHH:MM:SS" with NO "Z" and NO timezone offset. Use the time exactly as shown to the candidate in the email; if the email states a different timezone, convert it to ${timezone}. NEVER output UTC or shift the clock time. Resolve relative phrases ("next Tuesday at 3pm") using the received date. If no specific time, null.
 
 "apply_url": from the Candidate links below, choose the SINGLE URL that best points to this specific job posting / application portal / company careers page or site. Ignore unsubscribe, social, login, and tracking links. Use "" if none fits or the list is empty. Output the URL exactly as listed — never invent one.
 

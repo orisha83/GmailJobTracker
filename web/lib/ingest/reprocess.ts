@@ -15,6 +15,7 @@ import { fetchMessage, listThreadMessageIds, type FetchedMessage } from "@/lib/g
 import {
   appendRawEmails,
   batchUpdateValues,
+  ensureSheets,
   readRawEmails,
   readRows,
   type RawEmail,
@@ -40,6 +41,7 @@ export interface ReprocessReport {
   aiCalls: number;
   backfilledRaw: number; // raw entries recovered from Gmail
   skippedNoRaw: number; // rows whose content couldn't be recovered
+  failed: number; // AI errored on these rows (quota/safety) — rerun to retry
   changes: ReprocessChange[];
   applied: boolean;
   done: boolean; // false → budget hit; call again with startRow = nextRow
@@ -117,6 +119,7 @@ export async function runReprocess(
   const startRow = opts.startRow ?? 2; // row 1 is the header
 
   const auth = makeAuthedClient();
+  await ensureSheets(auth); // the Raw tab may not exist yet on older sheets
   const rows = (await readRows(auth)).filter((r) => r.rowNumber >= startRow);
   const rawByMessageId = await readRawEmails(auth);
   const recovered: RawEmail[] = [];
@@ -127,6 +130,7 @@ export async function runReprocess(
     aiCalls: 0,
     backfilledRaw: 0,
     skippedNoRaw: 0,
+    failed: 0,
     changes: [],
     applied: !dryRun,
     done: true,
@@ -144,6 +148,7 @@ export async function runReprocess(
 
     const message = toFetchedMessage(raw);
     let analysis = classifyHeuristically(message);
+    let source: "rule" | "ai" = "rule";
     if (!analysis) {
       // No rule match. If there's no interview signal either, leave the row as
       // classified originally — reprocess corrects, it never degrades.
@@ -159,6 +164,7 @@ export async function runReprocess(
       }
       if (report.aiCalls > 0) await sleep(config.ingest.throttleMs);
       report.aiCalls++;
+      source = "ai";
       analysis = await analyzer.analyze({
         subject: message.subject,
         body: message.body,
@@ -168,10 +174,12 @@ export async function runReprocess(
         links: message.links,
       });
       if (!analysis) {
-        // Transient model failure — resume from this row on the next call.
-        report.done = false;
-        report.nextRow = row.rowNumber;
-        break;
+        // Model failure (quota/safety/transient) — skip this row and keep
+        // going so one poisoned email can't block the rest of the sheet.
+        // A rerun retries it (nothing is persisted for the row).
+        report.rowsExamined++;
+        report.failed++;
+        continue;
       }
       analysis = guardOfferDowngrade(analysis, `${message.subject}\n${message.body}`);
     }
@@ -180,9 +188,28 @@ export async function runReprocess(
     report.reclassified++;
     if (!analysis.is_relevant) continue; // never degrade an existing row
 
+    // The rules classifier only outranks the original classification for
+    // rejections (high-precision regex). A rule "Applied" must never downgrade
+    // a row the AI read as Invitation/Rejection/Offer — the model saw context
+    // (e.g. "invite you to a phone interview" + ack boilerplate) that the
+    // regexes don't.
+    if (
+      source === "rule" &&
+      analysis.category === "Applied" &&
+      row.category !== "Applied" &&
+      row.category !== "Other" &&
+      row.category !== ""
+    ) {
+      continue;
+    }
+
     const newStep = analysis.step;
     const newCategory = analysis.category;
-    const newInterview = analysis.interview_datetime ?? "";
+    // Rules can't extract datetimes — a rule result never clears one the AI found.
+    const newInterview =
+      source === "rule" && !analysis.interview_datetime
+        ? row.interviewDateTime
+        : (analysis.interview_datetime ?? "");
     const rowChanges: ReprocessChange[] = [];
     const base = { rowNumber: row.rowNumber, company: row.company, role: row.role };
     if (newStep !== row.step) {

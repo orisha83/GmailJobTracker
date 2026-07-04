@@ -90,3 +90,22 @@ describe("looksLikeInvitation", () => {
     ).toBe(true);
   });
 });
+
+describe("invitation phrasing with an adjective round name", () => {
+  it("defers an ack + 'invite you to a phone interview' to the AI (not rule-Applied)", () => {
+    const a = classifyHeuristically(
+      msg({
+        subject: "KELA — next steps",
+        body: "Thank you for applying to KELA. We'd like to invite you to a phone interview next week.",
+      }),
+    );
+    expect(a).toBeNull(); // mixed ack + invitation → AI decides
+  });
+
+  it("still shortcuts a pure ack", () => {
+    const a = classifyHeuristically(
+      msg({ subject: "Application received", body: "Thank you for applying. We will review your CV." }),
+    );
+    expect(a?.category).toBe("Applied");
+  });
+});
