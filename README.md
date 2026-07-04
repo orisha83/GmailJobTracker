@@ -1,9 +1,9 @@
 # Gmail Job Tracker
 
-A personal, self-hosted job-application tracker. Every couple of hours it scans **your**
-Gmail for application / interview / recruiter emails, an AI model classifies each one, and
-the results land in **your** Google Sheet and on a clean dashboard — with an optional email
-digest when something new arrives.
+A personal, self-hosted job-application tracker. Every hour it scans **your** Gmail for
+application / interview / recruiter emails — including replies inside conversations it
+already tracks — an AI model classifies each one, and the results land in **your** Google
+Sheet and on a clean dashboard — with an optional email digest when something new arrives.
 
 No server to run, no database to manage. It's a Next.js app on Vercel, a Google Sheet as
 the store, and one external cron pinging a protected endpoint. Runs at ~$0 on free tiers.
@@ -19,10 +19,14 @@ External cron ──Bearer CRON_SECRET──▶ /api/cron/poll ──▶ Gmail (
 
 ## Features
 
-- **Hands-off ingestion** — scans Gmail on a schedule with incremental watermarks (no
-  re-processing) and per-run cost caps.
-- **AI classification** — defaults to Anthropic **Claude Haiku**; switch to free **Google
-  Gemini** with one env var.
+- **Hands-off ingestion** — scans Gmail on a schedule, per **message** (a reply carrying
+  an interview invite is never missed), with incremental watermarks and per-run cost caps.
+- **AI classification** — defaults to free **Google Gemini** (rules classify templated
+  mail for $0 first); switch to Anthropic **Claude** with one env var.
+- **Stage-aware status** — each position's status is derived from all of its emails: an
+  "under review" ack can't hide a scheduled interview, and "Offer" means a real job offer.
+- **Repairable** — raw emails are cached in a hidden tab; `scripts/reprocess.mjs` re-runs
+  the classifier offline and shows a diff before writing anything (manual edits are safe).
 - **Your data, your account** — everything lives in your own Gmail + Google Sheet.
 - **Dashboard** — opportunities grouped by company/position, with search, sort, calendar
   links, and mobile-friendly layout.

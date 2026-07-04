@@ -108,6 +108,9 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
+    // Initial fetch on mount. load() flips the loading flag synchronously,
+    // which this rule flags — intentional for a data-fetch effect.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
   }, [load]);
 

@@ -99,18 +99,18 @@ cp .env.example .env.local      # you'll fill this in as you go
 1. Create a new, empty Google Sheet **in the same Google account** (any name).
 2. Copy its ID from the URL:
    `https://docs.google.com/spreadsheets/d/`**`THIS_PART`**`/edit` → `SHEET_ID`
-3. Don't add tabs or headers — the app creates the `Tracker`, `Processed`, and `Meta`
-   tabs and the header row automatically on first run.
+3. Don't add tabs or headers — the app creates the `Tracker`, `Processed`, `Meta`, and
+   `Raw` tabs and the header row automatically on first run.
 
 ## Step 5 — AI provider key
 
-**Option A — Anthropic Claude (default, recommended quality):**
+**Option A — Google Gemini (default, free):**
+1. Get a key at https://aistudio.google.com/app/apikey
+2. Set in `.env.local`: `GEMINI_API_KEY=...` (`AI_PROVIDER=gemini` is the default)
+
+**Option B — Anthropic Claude (paid, higher quality):**
 1. Get a key at https://console.anthropic.com/ → API Keys → add a few dollars of credit.
 2. Set in `.env.local`: `AI_PROVIDER=claude` and `ANTHROPIC_API_KEY=...`
-
-**Option B — Google Gemini (free):**
-1. Get a key at https://aistudio.google.com/app/apikey
-2. Set in `.env.local`: `AI_PROVIDER=gemini` and `GEMINI_API_KEY=...`
 
 ## Step 6 — Finish `.env.local`
 
@@ -158,15 +158,15 @@ Set the remaining values (see the full reference table below):
 
 ## Step 10 — Schedule the scan (external cron)
 
-Vercel Hobby crons only run **once per day**, so drive the every-2-hours cadence with a
-free external scheduler.
+Vercel Hobby crons only run **once per day** (the daily 05:00 run in `vercel.json` is
+just a backstop), so drive the hourly cadence with a free external scheduler.
 
 **cron-job.org (recommended):**
 1. Sign up at https://cron-job.org → **Create cronjob**.
 2. URL: `https://your-app.vercel.app/api/cron/poll`
 3. Method: **GET**.
 4. Add header: `Authorization: Bearer <CRON_SECRET>` (the same value as the env var).
-5. Schedule: set your timezone, minute `0`, hours e.g. `8,10,12,14,16,18,20`, every day.
+5. Schedule: set your timezone, minute `0`, every hour from `8` to `20`, every day.
 6. Save & enable. Trigger it once manually to confirm a `{"ok":true,...}` response.
 
 > Alternative: a GitHub Actions scheduled workflow running the same authenticated `curl`.
@@ -197,7 +197,8 @@ Set these in `web/.env.local` (local) and in Vercel → Settings → Environment
 | `SHEET_DATA_TAB` | — | `Tracker` | Visible data tab name |
 | `SHEET_PROCESSED_TAB` | — | `Processed` | Hidden dedup tab |
 | `SHEET_META_TAB` | — | `Meta` | Hidden scan-watermark tab |
-| `AI_PROVIDER` | — | `claude` | `claude` or `gemini` |
+| `SHEET_RAW_TAB` | — | `Raw` | Hidden raw-email cache (offline re-classification) |
+| `AI_PROVIDER` | — | `gemini` | `gemini` (free) or `claude` |
 | `ANTHROPIC_API_KEY` | if `claude` | — | Anthropic key (Step 5A) |
 | `ANTHROPIC_MODEL` | — | `claude-haiku-4-5` | Anthropic model id |
 | `GEMINI_API_KEY` | if `gemini` | — | Gemini key (Step 5B) |
@@ -218,16 +219,39 @@ Set these in `web/.env.local` (local) and in Vercel → Settings → Environment
   application lifecycle. Tell Claude *"narrow the search query to only interview invites"*
   and it'll help.
 - **Timezone:** set `TIMEZONE` to your IANA zone. Note: the dashboard currently also has a
-  display timezone constant in `web/app/page.tsx` (`DISPLAY_TZ`) — if your times look
+  display timezone constant in `web/lib/positions.ts` (`DISPLAY_TZ`) — if your times look
   shifted, ask Claude to align it with your `TIMEZONE`.
 - **Quieter notifications:** raise `NOTIFY_MIN_INTERVAL_MINUTES`, or leave `NOTIFY_EMAIL`
   blank to disable digest emails entirely.
 - **Cost control:** lower `MAX_PER_RUN`, or use `AI_PROVIDER=gemini` for the free tier.
 
+## Repair / re-classify (no data loss)
+
+Two maintenance scripts fix mistakes **without** wiping the Sheet or your manual
+status edits (run them against a local `npm run dev` or with `--base https://your.app`):
+
+1. **Backfill** — one-time after upgrading to per-message tracking, or whenever you
+   suspect an email was missed. Walks every known conversation and analyzes messages
+   the tracker never saw (e.g. an interview invite that arrived as a reply):
+   ```bash
+   cd web && node --env-file=.env.local scripts/backfill.mjs
+   ```
+2. **Reprocess** — re-runs the current classifier over the cached raw emails and
+   shows a diff (dry run). Only `--apply` writes the corrections; a Status you set
+   by hand is never touched:
+   ```bash
+   node --env-file=.env.local scripts/reprocess.mjs           # review the diff
+   node --env-file=.env.local scripts/reprocess.mjs --apply   # write corrections
+   ```
+
+Run backfill first, then reprocess. Both are resumable and safe to re-run; each pass
+spends at most `MAX_PER_RUN` AI calls (fits the free Gemini tier).
+
 ## Reset / start over
 
 `web/scripts/reset.mjs` clears the Sheet tabs and scan watermark so the next run
-re-scans from `INGEST_START_DATE`. Ask Claude to run it if you want a clean slate.
+re-scans from `INGEST_START_DATE`. **This also wipes manual status edits** — prefer
+the repair scripts above. Ask Claude to run it if you want a clean slate.
 
 ## Troubleshooting
 

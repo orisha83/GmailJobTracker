@@ -39,52 +39,83 @@ A single user (the product owner): an active job-seeker in the Israeli market re
 | Surface | Web app |
 | Email ingestion | Full Gmail OAuth + Gmail API (standalone, no Apps Script) |
 | Data store | Google Sheets (source of truth) |
-| AI provider | Gemini 2.5 Flash (free tier), behind a swappable interface |
+| AI provider | Gemini 2.5 Flash Lite (free tier), behind a swappable interface (Claude optional) |
 | Users | Single user only |
 | Notifications | Email-to-self (v1) |
-| Polling frequency | Hourly (assumption) |
+| Polling frequency | Hourly 08:00–20:00 Asia/Jerusalem via cron-job.org → `/api/cron/poll`; Vercel Cron daily 05:00 as backstop |
 
 ## 7. MVP scope (thin vertical slices, in build order)
 1. **Auth** — Google OAuth login; user grants Gmail read + Sheets read/write scopes. Refresh token stored securely (secret/env), not in the Sheet.
-2. **Ingestion + analysis** — Scheduled backend job searches Gmail with the bilingual query, sends new messages to the AI provider (Gemini 2.5 Flash, behind a swappable interface), gets structured JSON, appends relevant rows to the Sheet. Dedup by Gmail message ID, tracked out of the visible data area.
-3. **Dashboard read** — Web table listing tracked opportunities: company / role / type / interview date-time / summary / status / received date.
+2. **Ingestion + analysis** — Scheduled backend job searches Gmail with the bilingual query and processes **every new message — including replies inside already-tracked conversations** (an interview invite usually arrives as a reply; per-thread dedup would silently drop it). Rules classify templated acks/rejections for free; signal-bearing mail goes to the AI (Gemini 2.5 Flash Lite behind a swappable interface, plus a code-level offer guard); relevant rows are appended to the Sheet. Dedup by Gmail **message ID**, tracked out of the visible data area. Raw subject/body are cached (hidden tab) so any email can be re-classified offline later.
+3. **Dashboard read** — Web table listing tracked positions: company / role / status / next interview / interviewer / last update.
 4. **Status editing** — User changes pipeline status from the dashboard; write back to the Sheet without the ingestion job overwriting manual edits.
-5. **Scheduling** — Hourly poll so ingestion runs without the user being present.
-6. **Notification** — Email-to-self when a new relevant opportunity is detected (carried over from prototype).
+5. **Scheduling** — Hourly poll (08:00–20:00) so ingestion runs without the user being present.
+6. **Notification** — Email-to-self digest when a new invitation or offer is detected.
+7. **Repair tools** — `scripts/backfill.mjs` (one-time: recover messages the per-thread era never analyzed) and `scripts/reprocess.mjs` (re-run the current classifier over the raw cache, diff first, then apply — never touching manually-edited statuses).
 
-## 8. Data model (Google Sheet columns)
+## 8. Data model (Google Sheet tabs)
+
+**Tracker (visible) — one row per analyzed email, columns A:N**
 | Column | Field | Source | Notes |
 |---|---|---|---|
-| A | Received date | Gmail | Email date |
-| B | Company | Claude | Translated to English |
-| C | Role | Claude | Translated to English |
-| D | Type | Claude | Interview / Phone Call / Home Assignment / HR Meeting |
-| E | Interview date/time | Claude | Resolved using email date for relative phrases ("next Tuesday"); blank if none |
-| F | Summary | Claude | 1-sentence English summary |
-| G | Status | User/system | Default: `Review Needed`. Pipeline values below. User-editable, never overwritten by ingestion. |
-| H | Message ID | Gmail | Dedup key |
+| A | Received | Gmail | Email date (ISO 8601) |
+| B | Company | AI/rules | Translated to English |
+| C | CompanyKey | System | Normalized grouping key (name slug, domain fallback) |
+| D | Role | AI/rules | Translated to English |
+| E | Step | AI/rules | This email's round, e.g. "HR screen", "VP interview" (immutable record) |
+| F | Category | AI/rules | Invitation / Applied / Rejection / Offer / Other — drives color and alerts |
+| G | InterviewDateTime | AI | Candidate-local wall-clock, resolved from relative phrases; blank if none |
+| H | Summary | AI | 1-sentence English summary |
+| I | Status | User/system | Initialized to Step; user-editable; **never overwritten by ingestion or reprocess** |
+| J | Source | System | "rule" (free heuristics) or "ai" |
+| K | ThreadID | Gmail | Conversation id (one thread → many rows) |
+| L | Link | AI | Best job/careers URL from the email |
+| M | Interviewer | AI | Named interviewer, if stated |
+| N | MessageID | Gmail | **Dedup key — one email = one row** (empty on pre-migration rows until backfill) |
 
-**Pipeline status values:** `Review Needed` → `Replied` → `Scheduled` → `Done` (plus `Rejected` / `Archived`).
+**Processed (hidden) — dedup log, columns A:C:** `messageId | threadId | processedAt`. Legacy rows (bare threadId in A) remain valid: a threadId equals its first message's id, and legacy markers suppress only pre-watermark mail.
 
-Processed message IDs (incl. non-relevant) are tracked separately (hidden sheet / dedicated range) so the visible data stays clean — no "Not Relevant" junk rows.
+**Raw (hidden) — offline email cache, columns A:H:** `MessageID | ThreadID | Received | SenderName | SenderDomain | Subject | Body (truncated 4k) | LinksJSON`. Lets the classifier be re-run without re-reading Gmail.
+
+**Meta (hidden):** scan watermark + notification state.
+
+### Position status — derivation rules (stage-aware)
+The dashboard groups rows into positions (company + role, split at rejections) and **derives** the shown status from all of a position's emails, in this precedence:
+
+| # | Situation | Position shows |
+|---|-----------|----------------|
+| 1 | Any rejection email, or manual Rejected/Withdrawn/Archived | That terminal status (a later re-apply starts a new card) |
+| 2 | Manual status set on the **latest** row, no newer email since | The manual status |
+| 3 | A genuine job-offer email exists (compensation/contract terms) | Offer |
+| 4 | Any interview invitation exists | The most recent invitation's step — a later ack/"under review" can **never** downgrade it to "Applied" |
+| 5 | Upcoming interview time exists but no Invitation row (edge case) | "Interview scheduled" |
+| 6 | Only acks/updates | Applied |
+
+Manual-override semantics: a manual status holds until **newer email evidence** arrives, then the derived status takes over; terminal manual statuses always stick. Manual dropdown values: `Applied / Interviewing / Offer / Rejected / Withdrawn / Archived`.
+
+"Offer" means employment terms (compensation, contract, offer letter, start date). "We'd like to offer you an interview slot" is an **Invitation** — enforced in the prompts and by a code-level guard (`guardOfferDowngrade`).
 
 ## 9. AI extraction contract
-The AI provider (Gemini 2.5 Flash for v1, behind a `EmailAnalyzer` interface so Claude/other can be swapped in) receives the email subject, body (truncated), and email date. Returns JSON:
+The AI provider (Gemini 2.5 Flash Lite for v1, behind an `EmailAnalyzer` interface so Claude/other can be swapped in) receives the email subject, body (truncated), email date, sender hints, and candidate links. Returns JSON:
 ```json
 {
   "is_relevant": true,
   "company": "string (English)",
   "role": "string (English)",
-  "type": "Interview | Phone Call | Home Assignment | HR Meeting",
-  "interview_datetime": "ISO 8601 or null",
-  "summary": "1-sentence English summary"
+  "category": "Invitation | Applied | Rejection | Offer | Other",
+  "step": "short label, e.g. 'HR screen', 'VP interview'",
+  "interview_datetime": "candidate-local wall-clock or null",
+  "summary": "1-sentence English summary",
+  "apply_url": "best job/careers URL from the email links, or empty",
+  "interviewer_name": "full name if stated, or empty"
 }
 ```
+Model output is normalized defensively (`normalizeAnalysis`) and passed through `guardOfferDowngrade` — an "Offer" carrying an interview time but no compensation language is downgraded to Invitation in code.
 
 ## 10. User journeys
 1. **First-time setup** — User opens app → signs in with Google → grants Gmail + Sheets access → points app at a Sheet → sees empty dashboard.
-2. **Automatic capture** — Hourly, the backend finds a new recruiter email → Claude extracts details → row appears in dashboard as `Review Needed` → user gets an email notification.
-3. **Triage** — User opens dashboard → sees new opportunity with date/time → updates status to `Scheduled`.
+2. **Automatic capture** — Hourly (08:00–20:00), the backend finds a new recruiter email — a new thread **or a reply inside a tracked one** — extracts details → the position's derived status updates in the dashboard → invitations/offers land in the digest email.
+3. **Triage** — User opens dashboard → sees the position at its interview step with date/time and interviewer → optionally overrides the status from the dropdown.
 4. **Review pipeline** — User filters/sorts dashboard to see what needs a reply vs what's scheduled.
 5. **Re-auth** — Token expires/revoked → app prompts user to re-connect Google.
 
@@ -104,7 +135,7 @@ The AI provider (Gemini 2.5 Flash for v1, behind a `EmailAnalyzer` interface so 
 - Gemini free tier: lower rate limits (fine at this volume) and free-tier data may be used by Google to improve models (acceptable for recruiter emails). Swap to Claude later if desired.
 
 **Assumptions**
-- Hourly polling is sufficient.
+- Hourly polling during waking hours (08:00–20:00 via cron-job.org) is sufficient; the Vercel daily 05:00 cron is only a backstop.
 - One pre-existing Google Sheet, provided by the user.
 - Email-to-self notification is enough for v1.
 - Same bilingual Gmail search query as the prototype is a good starting filter.
@@ -114,10 +145,12 @@ The AI provider (Gemini 2.5 Flash for v1, behind a `EmailAnalyzer` interface so 
 - [ ] Google Cloud project setup for OAuth consent + Gemini API key (free tier).
 
 ## 14. Success criteria (MVP done when)
-- User can connect Google and see recruiter emails auto-appear in the dashboard within an hour of arrival.
-- Each relevant email produces a structured row (company/role/type/date-time/summary) in the Sheet.
-- User can change status in the dashboard and it persists in the Sheet without being overwritten.
+- User can connect Google and see recruiter emails auto-appear in the dashboard within an hour of arrival (during the 08:00–20:00 polling window).
+- **Every** relevant email — including replies inside tracked conversations — produces a structured row (company/role/step/category/date-time/summary) in the Sheet; nothing is silently skipped.
+- A position with a scheduled upcoming interview never shows "Applied"; "Offer" appears only for genuine job offers.
+- User can change status in the dashboard and it persists in the Sheet without being overwritten by ingestion or reprocess.
 - No duplicate rows for the same email.
+- Misclassified emails are repairable offline: reprocess shows a diff before applying corrections.
 - All required UI states are present and usable on mobile width.
 
 ## 15. Next stage
