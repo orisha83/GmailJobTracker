@@ -58,6 +58,9 @@ export const config = {
     dataSheet: env("SHEET_DATA_TAB") ?? "Tracker",
     processedSheet: env("SHEET_PROCESSED_TAB") ?? "Processed",
     metaSheet: env("SHEET_META_TAB") ?? "Meta",
+    // Hidden cache of raw email content (subject/body) so misclassified mail
+    // can be re-analyzed offline without re-reading Gmail.
+    rawSheet: env("SHEET_RAW_TAB") ?? "Raw",
   },
   // Which analyzer to use: "gemini" (default — free tier) or "claude" (paid).
   // Default is Gemini so the tracker runs at $0 out of the box; set

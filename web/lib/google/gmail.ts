@@ -7,6 +7,8 @@ import type { OAuth2Client } from "google-auth-library";
 
 export interface FetchedMessage {
   id: string;
+  /** Gmail thread (conversation) this message belongs to. */
+  threadId: string;
   subject: string;
   body: string;
   /** ISO 8601 received date. */
@@ -44,34 +46,65 @@ function gmailClient(auth: OAuth2Client): gmail_v1.Gmail {
   return google.gmail({ version: "v1", auth });
 }
 
-export interface ThreadHit {
+export interface MessageHit {
+  messageId: string;
   threadId: string;
-  /** The most recent message in that thread (what we analyze). */
-  latestMessageId: string;
 }
 
 /**
- * Returns one hit per matching Gmail THREAD (conversation), newest first.
- * messages.list is reverse-chronological and includes each message's threadId,
- * so the first message seen per thread is its latest — we dedup on that without
- * extra API calls. This collapses reply chains / calendar invites / reminders
- * into a single tracked opportunity per conversation.
+ * Returns every matching Gmail MESSAGE, newest first. Every message counts —
+ * an interview invite often arrives as a reply inside an already-tracked
+ * conversation, so collapsing to one hit per thread would silently drop it
+ * (the "stuck on Applied" bug). Dedup against already-processed message IDs
+ * happens in the poller, not here.
  */
-export async function searchThreads(
+export async function searchMessages(
   auth: OAuth2Client,
   query: string,
-  maxResults = 100,
-): Promise<ThreadHit[]> {
+  maxResults = 300,
+): Promise<MessageHit[]> {
   const gmail = gmailClient(auth);
-  const res = await gmail.users.messages.list({ userId: "me", q: query, maxResults });
-  const seen = new Set<string>();
-  const hits: ThreadHit[] = [];
-  for (const m of res.data.messages ?? []) {
-    if (!m.id || !m.threadId || seen.has(m.threadId)) continue;
-    seen.add(m.threadId);
-    hits.push({ threadId: m.threadId, latestMessageId: m.id });
-  }
+  const hits: MessageHit[] = [];
+  let pageToken: string | undefined;
+  do {
+    const res = await gmail.users.messages.list({
+      userId: "me",
+      q: query,
+      maxResults: Math.min(100, maxResults - hits.length),
+      pageToken,
+    });
+    for (const m of res.data.messages ?? []) {
+      if (m.id && m.threadId) hits.push({ messageId: m.id, threadId: m.threadId });
+    }
+    pageToken = res.data.nextPageToken ?? undefined;
+  } while (pageToken && hits.length < maxResults);
   return hits;
+}
+
+/**
+ * All message IDs in one thread (metadata-only — cheap), oldest first.
+ * Used by the repair tools to find messages that were never analyzed under
+ * the old one-row-per-thread scheme.
+ */
+export async function listThreadMessageIds(
+  auth: OAuth2Client,
+  threadId: string,
+): Promise<{ messageId: string; internalDate: string }[]> {
+  const gmail = gmailClient(auth);
+  const res = await gmail.users.threads.get({
+    userId: "me",
+    id: threadId,
+    format: "metadata",
+    metadataHeaders: ["Date"],
+  });
+  return (res.data.messages ?? [])
+    .filter((m) => m.id)
+    .map((m) => ({
+      messageId: m.id as string,
+      internalDate: m.internalDate
+        ? new Date(Number(m.internalDate)).toISOString()
+        : "",
+    }));
 }
 
 /** Recursively walk MIME parts and decode the first text/plain body found. */
@@ -155,6 +188,7 @@ export async function fetchMessage(
 
   return {
     id,
+    threadId: msg.threadId ?? "",
     subject,
     body: extractPlainBody(msg.payload),
     date,

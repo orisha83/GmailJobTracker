@@ -9,11 +9,11 @@ vi.mock("@/lib/config", () => ({
 // Avoid loading the real analyzers (and the Anthropic SDK); we always inject a spy.
 vi.mock("@/lib/ai", () => ({ getAnalyzer: () => ({ analyze: vi.fn() }) }));
 vi.mock("@/lib/google/auth", () => ({ makeAuthedClient: () => ({}) }));
-vi.mock("@/lib/google/gmail", () => ({ searchThreads: vi.fn(), fetchMessage: vi.fn() }));
+vi.mock("@/lib/google/gmail", () => ({ searchMessages: vi.fn(), fetchMessage: vi.fn() }));
 vi.mock("@/lib/google/sheets", () => ({
   ensureSheets: vi.fn(),
   getLastChecked: vi.fn(),
-  getProcessedThreadIds: vi.fn(),
+  getProcessedIds: vi.fn(),
   markProcessedBatch: vi.fn(),
   appendRows: vi.fn(),
   setLastChecked: vi.fn(),
@@ -21,20 +21,27 @@ vi.mock("@/lib/google/sheets", () => ({
 vi.mock("@/lib/notify", () => ({ notifyDigest: vi.fn() }));
 
 import { runPoll } from "./poll";
-import { searchThreads, fetchMessage } from "@/lib/google/gmail";
+import { searchMessages, fetchMessage } from "@/lib/google/gmail";
 import {
   appendRows,
   getLastChecked,
-  getProcessedThreadIds,
+  getProcessedIds,
   markProcessedBatch,
   setLastChecked,
 } from "@/lib/google/sheets";
 import { notifyDigest } from "@/lib/notify";
 
-/** Minimal FetchedMessage builder. */
+// Watermark used by all tests (epoch seconds). Messages default to a date far
+// after it; legacy-suppression tests use PRE_WATERMARK_ISO (before it).
+const WATERMARK = 1_750_000_000; // 2025-06-15T14:26:40Z
+const PRE_WATERMARK_ISO = "2025-06-01T00:00:00.000Z";
+
+/** Minimal FetchedMessage builder (threadId defaults to `t-<id>`). */
 function fm(partial: Partial<FetchedMessage>): FetchedMessage {
+  const id = partial.id ?? "m";
   return {
-    id: "m",
+    id,
+    threadId: `t-${id}`,
     subject: "",
     body: "",
     date: "2026-07-01T09:00:00.000Z",
@@ -62,10 +69,10 @@ function an(partial: Partial<Analysis>): Analysis {
   };
 }
 
-/** Wires searchThreads → the given messages and fetchMessage → lookup by id. */
+/** Wires searchMessages → the given messages and fetchMessage → lookup by id. */
 function feed(messages: FetchedMessage[]): void {
-  vi.mocked(searchThreads).mockResolvedValue(
-    messages.map((m) => ({ threadId: `t-${m.id}`, latestMessageId: m.id })),
+  vi.mocked(searchMessages).mockResolvedValue(
+    messages.map((m) => ({ messageId: m.id, threadId: m.threadId })),
   );
   const byId = new Map(messages.map((m) => [m.id, m]));
   vi.mocked(fetchMessage).mockImplementation(async (_auth, id) => byId.get(id) ?? null);
@@ -78,9 +85,12 @@ function spyAnalyzer(result: Analysis | null): EmailAnalyzer & { analyze: Return
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(getProcessedThreadIds).mockResolvedValue(new Set());
-  vi.mocked(getLastChecked).mockResolvedValue(1_000_000);
-  vi.mocked(searchThreads).mockResolvedValue([]);
+  vi.mocked(getProcessedIds).mockResolvedValue({
+    messageIds: new Set(),
+    legacyThreadIds: new Set(),
+  });
+  vi.mocked(getLastChecked).mockResolvedValue(WATERMARK);
+  vi.mocked(searchMessages).mockResolvedValue([]);
   vi.mocked(fetchMessage).mockResolvedValue(null);
 });
 
@@ -94,7 +104,9 @@ describe("runPoll — self-notification backstop (commit 7fe53e1)", () => {
     expect(analyzer.analyze).not.toHaveBeenCalled();
     expect(vi.mocked(appendRows).mock.calls[0][1]).toEqual([]); // no rows appended
     expect(vi.mocked(notifyDigest).mock.calls[0][1]).toEqual([]); // no alerts queued
-    expect(vi.mocked(markProcessedBatch).mock.calls[0][1]).toEqual(["t-m1"]); // still marked
+    expect(vi.mocked(markProcessedBatch).mock.calls[0][1]).toEqual([
+      { messageId: "m1", threadId: "t-m1" },
+    ]); // still marked
     expect(result.skipped).toBe(1);
     expect(result.relevant).toBe(0);
   });
@@ -120,10 +132,108 @@ describe("runPoll — AI path", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].source).toBe("ai");
     expect(rows[0].company).toBe("Acme");
+    expect(rows[0].messageId).toBe("m2");
     const alerts = vi.mocked(notifyDigest).mock.calls[0][1];
     expect(alerts).toHaveLength(1);
     expect(result.invitations).toBe(1);
-    expect(vi.mocked(markProcessedBatch).mock.calls[0][1]).toEqual(["t-m2"]);
+    expect(vi.mocked(markProcessedBatch).mock.calls[0][1]).toEqual([
+      { messageId: "m2", threadId: "t-m2" },
+    ]);
+  });
+});
+
+describe("runPoll — per-message dedup (the missed-reply bug)", () => {
+  it("analyzes a NEW reply in a thread whose earlier message was already processed", async () => {
+    // Same thread "t-conv": "old" was processed on a previous run; "reply" is new.
+    feed([
+      fm({
+        id: "reply",
+        threadId: "t-conv",
+        subject: "Re: Your application",
+        body: "We'd like to invite you to an interview. Please share your availability.",
+      }),
+    ]);
+    vi.mocked(getProcessedIds).mockResolvedValue({
+      messageIds: new Set(["old"]),
+      legacyThreadIds: new Set(),
+    });
+    const analyzer = spyAnalyzer(an({ category: "Invitation", step: "HR screen" }));
+
+    const result = await runPoll(analyzer);
+
+    expect(analyzer.analyze).toHaveBeenCalledTimes(1);
+    const rows = vi.mocked(appendRows).mock.calls[0][1];
+    expect(rows).toHaveLength(1);
+    expect(rows[0].threadId).toBe("t-conv");
+    expect(rows[0].messageId).toBe("reply");
+    expect(result.invitations).toBe(1);
+  });
+
+  it("skips a message that was itself already processed", async () => {
+    feed([fm({ id: "seen", subject: "Interview invite", body: "Please share your availability." })]);
+    vi.mocked(getProcessedIds).mockResolvedValue({
+      messageIds: new Set(["seen"]),
+      legacyThreadIds: new Set(),
+    });
+    const analyzer = spyAnalyzer(an({}));
+
+    const result = await runPoll(analyzer);
+
+    expect(analyzer.analyze).not.toHaveBeenCalled();
+    expect(fetchMessage).not.toHaveBeenCalled(); // cheap skip, no fetch
+    expect(result.skipped).toBe(1);
+  });
+});
+
+describe("runPoll — legacy (v1 per-thread) marker compatibility", () => {
+  it("suppresses pre-watermark mail in a legacy thread without marking it processed", async () => {
+    // The legacy marker means "this thread was settled up to the watermark";
+    // backfill (not the poller) owns anything older that was silently missed.
+    feed([
+      fm({
+        id: "old-reply",
+        threadId: "t-legacy",
+        date: PRE_WATERMARK_ISO,
+        subject: "Interview invite",
+        body: "Please share your availability for an interview.",
+      }),
+    ]);
+    vi.mocked(getProcessedIds).mockResolvedValue({
+      messageIds: new Set(["t-legacy"]),
+      legacyThreadIds: new Set(["t-legacy"]),
+    });
+    const analyzer = spyAnalyzer(an({}));
+
+    const result = await runPoll(analyzer);
+
+    expect(analyzer.analyze).not.toHaveBeenCalled();
+    expect(vi.mocked(appendRows).mock.calls[0][1]).toEqual([]);
+    expect(vi.mocked(markProcessedBatch).mock.calls[0][1]).toEqual([]); // left for backfill
+    expect(result.skipped).toBe(1);
+  });
+
+  it("analyzes a post-watermark reply in a legacy thread", async () => {
+    feed([
+      fm({
+        id: "new-reply",
+        threadId: "t-legacy",
+        subject: "Re: Your application",
+        body: "We'd like to invite you to an interview. Please share your availability.",
+      }),
+    ]);
+    vi.mocked(getProcessedIds).mockResolvedValue({
+      messageIds: new Set(["t-legacy"]),
+      legacyThreadIds: new Set(["t-legacy"]),
+    });
+    const analyzer = spyAnalyzer(an({ category: "Invitation", step: "HR screen" }));
+
+    const result = await runPoll(analyzer);
+
+    expect(analyzer.analyze).toHaveBeenCalledTimes(1);
+    const rows = vi.mocked(appendRows).mock.calls[0][1];
+    expect(rows).toHaveLength(1);
+    expect(rows[0].messageId).toBe("new-reply");
+    expect(result.invitations).toBe(1);
   });
 });
 
@@ -186,7 +296,9 @@ describe("runPoll — rule-first pre-filter (free, no AI)", () => {
 
     expect(analyzer.analyze).not.toHaveBeenCalled();
     expect(vi.mocked(appendRows).mock.calls[0][1]).toEqual([]);
-    expect(vi.mocked(markProcessedBatch).mock.calls[0][1]).toEqual(["t-m7"]);
+    expect(vi.mocked(markProcessedBatch).mock.calls[0][1]).toEqual([
+      { messageId: "m7", threadId: "t-m7" },
+    ]);
     expect(result.irrelevant).toBe(1);
     expect(result.aiCalls).toBe(0);
   });
@@ -223,6 +335,12 @@ describe("runPoll — full routing in one pass", () => {
       "Rejection:rule",
     ]);
     expect(vi.mocked(notifyDigest).mock.calls[0][1]).toHaveLength(1); // only the invitation alerts
-    expect(vi.mocked(markProcessedBatch).mock.calls[0][1]).toEqual(["t-s", "t-a", "t-r", "t-i", "t-n"]);
+    expect(vi.mocked(markProcessedBatch).mock.calls[0][1]).toEqual([
+      { messageId: "s", threadId: "t-s" },
+      { messageId: "a", threadId: "t-a" },
+      { messageId: "r", threadId: "t-r" },
+      { messageId: "i", threadId: "t-i" },
+      { messageId: "n", threadId: "t-n" },
+    ]);
   });
 });

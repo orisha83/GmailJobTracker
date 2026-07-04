@@ -9,15 +9,16 @@
  * rejection group together even across different sender domains (ATS vs corporate).
  */
 import { makeAuthedClient } from "@/lib/google/auth";
-import { searchThreads, fetchMessage } from "@/lib/google/gmail";
+import { searchMessages, fetchMessage } from "@/lib/google/gmail";
 import {
   appendRows,
   ensureSheets,
   getLastChecked,
-  getProcessedThreadIds,
+  getProcessedIds,
   markProcessedBatch,
   setLastChecked,
   type NewJobRow,
+  type ProcessedEntry,
 } from "@/lib/google/sheets";
 import { notifyDigest, type AlertItem } from "@/lib/notify";
 import { config } from "@/lib/config";
@@ -26,7 +27,7 @@ import { getAnalyzer } from "@/lib/ai";
 import { classifyHeuristically, looksLikeInvitation } from "@/lib/classify/heuristics";
 
 export interface PollResult {
-  scanned: number; // threads handled this run (rule + ai)
+  scanned: number; // messages handled this run (rule + ai)
   skipped: number; // already processed, or our own digest email
   relevant: number; // logged
   invitations: number; // relevant AND category === "Invitation"
@@ -84,33 +85,47 @@ export async function runPoll(analyzer: EmailAnalyzer = getAnalyzer()): Promise<
     query,
   };
 
-  // One hit per thread (conversation), newest first.
-  const threads = await searchThreads(auth, query);
-  const processed = await getProcessedThreadIds(auth);
+  // Every matching message counts — interview invites often arrive as replies
+  // inside an already-tracked conversation, so we track per MESSAGE, not thread.
+  const messages = await searchMessages(auth, query);
+  const processed = await getProcessedIds(auth);
 
   // Batch writes + alerts; flush once at the end (Sheets write-quota friendly).
   const rowsToAppend: NewJobRow[] = [];
-  const processedIds: string[] = [];
+  const processedIds: ProcessedEntry[] = [];
   const alerts: AlertItem[] = [];
 
-  for (const { threadId, latestMessageId } of threads) {
-    if (processed.has(threadId)) {
+  for (const { messageId, threadId } of messages) {
+    if (processed.messageIds.has(messageId)) {
       result.skipped++;
       continue;
     }
-    const message = await fetchMessage(auth, latestMessageId);
+    const message = await fetchMessage(auth, messageId);
     if (!message) {
       result.failed++;
       continue;
     }
 
+    // Legacy compat: a v1 marker means the whole thread was settled up to the
+    // watermark under the old one-row-per-thread scheme. Suppress only mail
+    // from before that watermark (the overlap window can re-surface it);
+    // NEWER replies in the same thread must be analyzed. Don't mark these
+    // processed — the backfill script decides what to do with them.
+    if (processed.legacyThreadIds.has(threadId)) {
+      const messageEpoch = Math.floor(new Date(message.date).getTime() / 1000);
+      if (messageEpoch <= (lastChecked ?? 0)) {
+        result.skipped++;
+        continue;
+      }
+    }
+
     // Backstop for the self-notification loop (in case -from:me misses it, e.g.
     // an alias/forward): never analyze or alert on our own digests — just record
-    // the thread as processed so it's not re-scanned. MUST stay ahead of any
+    // the message as processed so it's not re-scanned. MUST stay ahead of any
     // classification below so our own alerts never reach the rules or the AI.
     if (message.isSelfNotification) {
       result.skipped++;
-      processedIds.push(threadId);
+      processedIds.push({ messageId, threadId });
       continue;
     }
 
@@ -125,7 +140,7 @@ export async function runPoll(analyzer: EmailAnalyzer = getAnalyzer()): Promise<
       // so it never burns the daily AI budget; only signal-bearing mail hits AI.
       if (!looksLikeInvitation(message)) {
         result.irrelevant++;
-        processedIds.push(threadId); // settled → don't refetch it
+        processedIds.push({ messageId, threadId }); // settled → don't refetch it
         continue;
       }
       // Needs AI, but the free quota is finite — defer once it's spent this run.
@@ -168,6 +183,7 @@ export async function runPoll(analyzer: EmailAnalyzer = getAnalyzer()): Promise<
         threadId,
         link: analysis.apply_url ?? "",
         interviewer: analysis.interviewer_name ?? "",
+        messageId,
       });
       // Interviews and offers are action-worthy → bundle into the digest.
       if (analysis.category === "Invitation" || analysis.category === "Offer") {
@@ -190,7 +206,7 @@ export async function runPoll(analyzer: EmailAnalyzer = getAnalyzer()): Promise<
       result.irrelevant++;
     }
 
-    processedIds.push(threadId);
+    processedIds.push({ messageId, threadId });
   }
 
   // Flush rows first, then processed markers (never mark processed unsaved), then alerts.

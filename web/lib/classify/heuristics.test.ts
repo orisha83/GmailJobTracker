@@ -6,6 +6,7 @@ import { classifyHeuristically, looksLikeInvitation } from "./heuristics";
 function msg(partial: Partial<FetchedMessage>): FetchedMessage {
   return {
     id: "m1",
+    threadId: "t-m1",
     subject: "",
     body: "",
     date: "2026-07-01T09:00:00.000Z",

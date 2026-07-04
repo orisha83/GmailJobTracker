@@ -1,8 +1,8 @@
 /**
  * Google Sheets as the source of truth (docs/ArchitectureLite.md §3).
- * Visible "Tracker" tab holds opportunities (cols A–H); hidden "Processed"
- * tab holds Gmail message IDs we've already seen, so the visible table stays
- * clean (no "Not Relevant" junk rows).
+ * Visible "Tracker" tab holds one row per analyzed email (cols A–N); hidden
+ * "Processed" tab holds Gmail message IDs we've already seen; hidden "Raw" tab
+ * caches raw email content for offline re-classification.
  *
  * Ingestion only appends rows and marks processed IDs — it never writes the
  * Status column, so manual edits from the dashboard are never clobbered.
@@ -41,15 +41,18 @@ export interface TrackedJob {
   status: string;
   /** "rule" (heuristic) or "ai" (Gemini). */
   source: string;
-  /** Gmail thread ID — the dedup key (one conversation = one row). */
+  /** Gmail thread ID this email belongs to (one conversation, many rows). */
   threadId: string;
   /** Best job/careers/position URL extracted from the email, or "". */
   link: string;
   /** Full name of the interviewer named in the email, or "". */
   interviewer: string;
+  /** Gmail message ID — the dedup key (one email = one row). Empty on rows
+   *  ingested before per-message tracking (backfilled by scripts/backfill). */
+  messageId: string;
 }
 
-// Column order A..M. Status=I, ThreadID=K, Link=L, Interviewer=M.
+// Column order A..N. Status=I, ThreadID=K, Link=L, Interviewer=M, MessageID=N.
 const HEADER = [
   "Received",
   "Company",
@@ -64,6 +67,7 @@ const HEADER = [
   "ThreadID",
   "Link",
   "Interviewer",
+  "MessageID",
 ];
 
 function sheetsClient(auth: OAuth2Client): sheets_v4.Sheets {
@@ -71,7 +75,7 @@ function sheetsClient(auth: OAuth2Client): sheets_v4.Sheets {
 }
 
 function dataRange(): string {
-  return `${config.sheets.dataSheet}!A:M`;
+  return `${config.sheets.dataSheet}!A:N`;
 }
 
 /** Reads all tracked opportunities (skips the header row). */
@@ -97,6 +101,7 @@ export async function readRows(auth: OAuth2Client): Promise<TrackedJob[]> {
     threadId: r[10] ?? "",
     link: r[11] ?? "",
     interviewer: r[12] ?? "",
+    messageId: r[13] ?? "",
   }));
 }
 
@@ -114,6 +119,7 @@ export interface NewJobRow {
   threadId: string;
   link: string;
   interviewer: string;
+  messageId: string;
 }
 
 function rowValues(job: NewJobRow): (string | number)[] {
@@ -131,6 +137,7 @@ function rowValues(job: NewJobRow): (string | number)[] {
     job.threadId,
     job.link,
     job.interviewer,
+    job.messageId,
   ];
 }
 
@@ -166,28 +173,57 @@ export async function updateStatus(
   return true;
 }
 
-/** Returns the set of Gmail THREAD IDs already processed. */
-export async function getProcessedThreadIds(auth: OAuth2Client): Promise<Set<string>> {
+/** One processed email: dedup on messageId; threadId kept for repair tools. */
+export interface ProcessedEntry {
+  messageId: string;
+  threadId: string;
+}
+
+export interface ProcessedIds {
+  /** Message IDs already analyzed (or settled as noise). */
+  messageIds: Set<string>;
+  /** Legacy v1 markers (whole thread processed, pre per-message tracking).
+   *  These suppress only mail older than the watermark — newer replies in the
+   *  same thread must still be analyzed. */
+  legacyThreadIds: Set<string>;
+}
+
+/**
+ * Reads the Processed tab. v2 rows are `messageId | threadId | processedAt`;
+ * legacy v1 rows hold a bare threadId in column A. A Gmail threadId equals its
+ * FIRST message's id, so legacy markers also count as that message's dedup key.
+ */
+export async function getProcessedIds(auth: OAuth2Client): Promise<ProcessedIds> {
   const sheets = sheetsClient(auth);
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: config.sheets.spreadsheetId,
-    range: `${config.sheets.processedSheet}!A:A`,
+    range: `${config.sheets.processedSheet}!A:B`,
   });
-  return new Set((res.data.values ?? []).flat().filter(Boolean) as string[]);
+  const messageIds = new Set<string>();
+  const legacyThreadIds = new Set<string>();
+  for (const row of res.data.values ?? []) {
+    const a = (row[0] as string) ?? "";
+    const b = (row[1] as string) ?? "";
+    if (!a) continue;
+    messageIds.add(a);
+    if (!b) legacyThreadIds.add(a);
+  }
+  return { messageIds, legacyThreadIds };
 }
 
-/** Records that threads have been processed (one batched write). */
+/** Records processed emails (one batched write). */
 export async function markProcessedBatch(
   auth: OAuth2Client,
-  threadIds: string[],
+  entries: ProcessedEntry[],
 ): Promise<void> {
-  if (threadIds.length === 0) return;
+  if (entries.length === 0) return;
   const sheets = sheetsClient(auth);
+  const processedAt = new Date().toISOString();
   await sheets.spreadsheets.values.append({
     spreadsheetId: config.sheets.spreadsheetId,
-    range: `${config.sheets.processedSheet}!A:A`,
+    range: `${config.sheets.processedSheet}!A:C`,
     valueInputOption: "RAW",
-    requestBody: { values: threadIds.map((id) => [id]) },
+    requestBody: { values: entries.map((e) => [e.messageId, e.threadId, processedAt]) },
   });
 }
 
@@ -208,6 +244,7 @@ export async function ensureSheets(auth: OAuth2Client): Promise<void> {
     config.sheets.dataSheet,
     config.sheets.processedSheet,
     config.sheets.metaSheet,
+    config.sheets.rawSheet,
   ].filter((t) => !titles.has(t));
   if (toCreate.length > 0) {
     await sheets.spreadsheets.batchUpdate({
@@ -218,15 +255,16 @@ export async function ensureSheets(auth: OAuth2Client): Promise<void> {
     });
   }
 
-  // Write the header on the data tab if A1 is empty.
+  // Write the header if A1 is empty, or refresh it when it's from an older
+  // schema with fewer columns (header-row only — data rows are untouched).
   const head = await sheets.spreadsheets.values.get({
     spreadsheetId: config.sheets.spreadsheetId,
-    range: `${config.sheets.dataSheet}!A1:M1`,
+    range: `${config.sheets.dataSheet}!A1:N1`,
   });
-  if (!head.data.values || head.data.values.length === 0) {
+  if ((head.data.values?.[0] ?? []).length < HEADER.length) {
     await sheets.spreadsheets.values.update({
       spreadsheetId: config.sheets.spreadsheetId,
-      range: `${config.sheets.dataSheet}!A1:M1`,
+      range: `${config.sheets.dataSheet}!A1:N1`,
       valueInputOption: "RAW",
       requestBody: { values: [HEADER] },
     });
