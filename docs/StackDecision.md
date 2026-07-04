@@ -13,7 +13,7 @@ Single-user standalone web app: Google OAuth → poll Gmail → AI extraction �
 | Layer | Choice | Why |
 |---|---|---|
 | **App framework** | **Next.js (App Router) on Vercel** | One deploy for dashboard + API routes + OAuth callback. No separate backend to host. |
-| **Scheduler** | **Vercel Cron** → hits an internal API route hourly | Native to Vercel, no extra infra. Free tier covers hourly. |
+| **Scheduler** | **cron-job.org** → hits `/api/cron/poll` hourly 08:00–20:00; Vercel Cron kept as a daily backstop | Vercel Hobby caps cron at once/day, so the hourly cadence comes from a free external scheduler (see [Scheduling.md](Scheduling.md)). |
 | **Auth** | **Google OAuth 2.0** via `googleapis` (offline access for refresh token) | Required for Gmail read + Sheets write. |
 | **Gmail + Sheets access** | **`googleapis`** (official Google Node client) | One library for Gmail API + Sheets API. |
 | **AI extraction** | **Gemini 2.5 Flash** (free tier) behind an `EmailAnalyzer` interface | Free, good at Hebrew, swappable to Claude later. |
@@ -31,7 +31,7 @@ Single-user standalone web app: Google OAuth → poll Gmail → AI extraction �
 - **Refresh token + "last checked" marker** live in env/secret (single user). If this ever goes multi-user, this must move to a DB — explicitly out of scope.
 - **Gmail is a restricted OAuth scope** → app runs *unverified* with the user as a test user (the "Google hasn't verified this app" screen). Fine for personal use; blocks public launch without Google verification.
 - **`EmailAnalyzer` interface** isolates the AI provider so Gemini → Claude is a small change.
-- **Vercel Cron min interval** is fine for hourly; the cron route must be protected (secret header / `CRON_SECRET`) so it can't be triggered by outsiders.
+- **Vercel Hobby cron is capped at once/day** — the hourly cadence runs on cron-job.org; the cron/admin routes must be protected (secret header / `CRON_SECRET`) so they can't be triggered by outsiders.
 - **Sheets concurrency**: single-user + hourly writes → negligible risk. Dashboard status edits and the ingestion job could in theory collide; mitigate by having ingestion only append and never overwrite the status column.
 
 ## Required external setup (manual, user-driven)
