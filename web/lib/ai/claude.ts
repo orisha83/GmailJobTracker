@@ -72,7 +72,7 @@ Set "is_relevant" false for anything not about this candidate's own job applicat
 
 "apply_url": from the Candidate links below, choose the SINGLE URL that best points to this specific job posting / application portal / company careers page or site. Ignore unsubscribe, social, login, and tracking links. Output "" if none of them fits or the list is empty. Output the URL exactly as listed — never invent one.
 
-"interviewer_name": the full name of the person the candidate will interview with / meet, if explicitly stated (e.g. "You'll meet with Jane Doe", "Your interviewer is John Smith"). This is the INTERVIEWER, not the recruiter, coordinator, or email sender. Output "" if no interviewer is clearly named.
+"interviewer_name": the full name of the person the candidate will interview with / meet, if explicitly stated (e.g. "You'll meet with Jane Doe", "Your interviewer is John Smith"). This is the INTERVIEWER, not the recruiter, coordinator, or email sender — and NEVER the candidate themselves${config.ingest.candidateName ? ` (the candidate is ${config.ingest.candidateName} — never output that name)` : " (the email's recipient/addressee is the candidate, not an interviewer)"}. Scheduling emails often carry the candidate's own name in titles like "Phone interview — <candidate>"; that is NOT the interviewer. Output "" if no interviewer is clearly named.
 
 Subject: ${input.subject}
 Body: ${body}

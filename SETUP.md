@@ -205,6 +205,7 @@ Set these in `web/.env.local` (local) and in Vercel → Settings → Environment
 | `GEMINI_MODEL` | — | `gemini-2.5-flash-lite` | Gemini model id |
 | `SEARCH_QUERY` | — | bilingual default | Gmail search query for what counts as a job email |
 | `TIMEZONE` | — | `Asia/Jerusalem` | IANA tz for date math + dashboard display |
+| `CANDIDATE_NAME` | — | — | Your full name — keeps the AI from listing you as your own interviewer |
 | `INGEST_START_DATE` | — | today (`YYYY/MM/DD`) | First-run scan floor; a watermark takes over after |
 | `MAX_PER_RUN` | — | `25` | Max emails analyzed (AI calls) per run — cost/time cap |
 | `NOTIFY_EMAIL` | — | — | Where digest emails go (your address) |

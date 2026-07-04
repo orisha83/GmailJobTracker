@@ -108,6 +108,17 @@ export function guardOfferDowngrade(analysis: Analysis, emailText: string): Anal
   };
 }
 
+/**
+ * The candidate can never be their own interviewer. Scheduling emails and
+ * calendar invites are full of the candidate's name ("Phone interview — Ori
+ * Shalom"), and small models sometimes report it back as interviewer_name.
+ */
+export function stripSelfInterviewer(analysis: Analysis, candidateName: string): Analysis {
+  const self = candidateName.trim().toLowerCase();
+  if (!self || analysis.interviewer_name.trim().toLowerCase() !== self) return analysis;
+  return { ...analysis, interviewer_name: "" };
+}
+
 export function normalizeAnalysis(raw: unknown): Analysis | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;

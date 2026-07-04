@@ -30,7 +30,7 @@ import {
   type RawEmail,
 } from "@/lib/google/sheets";
 import { classifyHeuristically, looksLikeInvitation } from "@/lib/classify/heuristics";
-import { guardOfferDowngrade, type EmailAnalyzer } from "@/lib/ai/analyzer";
+import { guardOfferDowngrade, stripSelfInterviewer, type EmailAnalyzer } from "@/lib/ai/analyzer";
 import { getAnalyzer } from "@/lib/ai";
 import { config } from "@/lib/config";
 
@@ -188,6 +188,7 @@ export async function runBackfill(
           continue; // transient — retried on the next backfill pass
         }
         analysis = guardOfferDowngrade(analysis, `${message.subject}\n${message.body}`);
+        analysis = stripSelfInterviewer(analysis, config.ingest.candidateName);
       }
 
       rawToAppend.push({

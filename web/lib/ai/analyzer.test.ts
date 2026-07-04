@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { guardOfferDowngrade, normalizeAnalysis, type Analysis } from "./analyzer";
+import {
+  guardOfferDowngrade,
+  normalizeAnalysis,
+  stripSelfInterviewer,
+  type Analysis,
+} from "./analyzer";
 
 describe("normalizeAnalysis", () => {
   it("returns null for non-objects", () => {
@@ -62,6 +67,34 @@ describe("normalizeAnalysis", () => {
       apply_url: "https://acme.com/careers/pm",
       interviewer_name: "Jane Doe",
     });
+  });
+});
+
+describe("stripSelfInterviewer — the candidate is never their own interviewer", () => {
+  const base: Analysis = {
+    is_relevant: true,
+    company: "Kela",
+    role: "Product Manager",
+    category: "Invitation",
+    step: "Phone interview",
+    interview_datetime: "2026-07-02T12:00:00",
+    summary: "",
+    apply_url: "",
+    interviewer_name: "Ori Shalom",
+  };
+
+  it("blanks the interviewer when it is the candidate (case-insensitive)", () => {
+    expect(stripSelfInterviewer(base, "Ori Shalom").interviewer_name).toBe("");
+    expect(stripSelfInterviewer(base, "ori shalom").interviewer_name).toBe("");
+  });
+
+  it("keeps a real interviewer", () => {
+    const a = stripSelfInterviewer({ ...base, interviewer_name: "Eran Strauchler" }, "Ori Shalom");
+    expect(a.interviewer_name).toBe("Eran Strauchler");
+  });
+
+  it("is a no-op when CANDIDATE_NAME is not configured", () => {
+    expect(stripSelfInterviewer(base, "").interviewer_name).toBe("Ori Shalom");
   });
 });
 

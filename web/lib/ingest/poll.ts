@@ -24,7 +24,7 @@ import {
 } from "@/lib/google/sheets";
 import { notifyDigest, type AlertItem } from "@/lib/notify";
 import { config } from "@/lib/config";
-import { guardOfferDowngrade, type EmailAnalyzer } from "@/lib/ai/analyzer";
+import { guardOfferDowngrade, stripSelfInterviewer, type EmailAnalyzer } from "@/lib/ai/analyzer";
 import { getAnalyzer } from "@/lib/ai";
 import { classifyHeuristically, looksLikeInvitation } from "@/lib/classify/heuristics";
 
@@ -167,6 +167,7 @@ export async function runPoll(analyzer: EmailAnalyzer = getAnalyzer()): Promise<
         continue; // transient failure → retry next run (not marked processed)
       }
       analysis = guardOfferDowngrade(analysis, `${message.subject}\n${message.body}`);
+      analysis = stripSelfInterviewer(analysis, config.ingest.candidateName);
     }
 
     result.scanned++;

@@ -22,7 +22,7 @@ import {
   type TrackedJob,
 } from "@/lib/google/sheets";
 import { classifyHeuristically, looksLikeInvitation } from "@/lib/classify/heuristics";
-import { guardOfferDowngrade, type EmailAnalyzer } from "@/lib/ai/analyzer";
+import { guardOfferDowngrade, stripSelfInterviewer, type EmailAnalyzer } from "@/lib/ai/analyzer";
 import { getAnalyzer } from "@/lib/ai";
 import { config } from "@/lib/config";
 
@@ -182,6 +182,7 @@ export async function runReprocess(
         continue;
       }
       analysis = guardOfferDowngrade(analysis, `${message.subject}\n${message.body}`);
+      analysis = stripSelfInterviewer(analysis, config.ingest.candidateName);
     }
 
     report.rowsExamined++;

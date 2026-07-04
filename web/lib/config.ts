@@ -82,6 +82,9 @@ export const config = {
   ingest: {
     searchQuery: env("SEARCH_QUERY") ?? DEFAULT_SEARCH_QUERY,
     timezone: env("TIMEZONE") ?? "Asia/Jerusalem",
+    // The candidate's own name (e.g. "Ori Shalom"). Used to keep the model
+    // from reporting the candidate as their own interviewer. Optional.
+    candidateName: env("CANDIDATE_NAME") ?? "",
     notifyEmail: env("NOTIFY_EMAIL") ?? "",
     // Min minutes between notification emails. Updates arriving inside the window
     // are held and rolled into the next digest, so at most one email per window.
