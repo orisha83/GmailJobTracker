@@ -113,8 +113,8 @@ export function guardOfferDowngrade(analysis: Analysis, emailText: string): Anal
  * calendar invites are full of the candidate's name ("Phone interview — Ori
  * Shalom"), and small models sometimes report it back as interviewer_name.
  */
-export function stripSelfInterviewer(analysis: Analysis, candidateName: string): Analysis {
-  const self = candidateName.trim().toLowerCase();
+export function stripSelfInterviewer(analysis: Analysis, candidateName?: string): Analysis {
+  const self = (candidateName ?? "").trim().toLowerCase();
   if (!self || analysis.interviewer_name.trim().toLowerCase() !== self) return analysis;
   return { ...analysis, interviewer_name: "" };
 }
