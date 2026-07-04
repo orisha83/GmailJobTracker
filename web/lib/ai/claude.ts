@@ -61,7 +61,7 @@ Set "is_relevant" false for anything not about this candidate's own job applicat
 - "Invitation": asks the candidate to act now — schedule/attend an interview, phone/HR screen, or do a home assignment.
 - "Applied": acknowledgement only — application received / under review / "we'll contact you IF there's a match". Conditional/future language ("If you are not selected…") is "Applied", NOT a rejection.
 - "Rejection": explicitly not moving forward with the candidate.
-- "Offer": an offer is being extended.
+- "Offer": a JOB OFFER of employment is being extended — compensation/salary, contract, offer letter, or start-date terms. Offering an interview, a call, or a time slot ("we'd like to offer you an interview slot", "נשמח להציע לך להתקדם לראיון") is NOT an Offer — that is an "Invitation".
 - "Other": job-related but none of the above.
 
 "step": a SHORT label (2-4 words) for this email's step, used as the status — identify the round/who when stated: "Applied", "Recruiter call", "HR screen", "Phone interview", "Hiring manager interview", "PM interview", "VP interview", "CEO interview", "Technical interview", "Home assignment", "Final round", "Offer", "Rejected".

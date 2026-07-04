@@ -82,6 +82,32 @@ function defaultStep(category: OpportunityCategory): string {
  * doesn't even have the relevance flag. Keeps bad model output from crashing
  * ingestion.
  */
+// Language that only a real job offer contains. "Package"/"terms" alone are too
+// generic; anchor on compensation, contract, and offer-letter vocabulary (EN+HE).
+const COMPENSATION_RE =
+  /(compensation|salary|equity|stock options?|offer letter|offer of employment|employment (?:agreement|contract)|base pay|annual base|sign(?:ing|-on) bonus|start date|שכר|תנאי העסקה|חוזה העסקה|הצעת שכר|בונוס חתימה|תאריך תחילה)/i;
+
+/**
+ * Safety net for the "offer you an interview slot" misread: small models
+ * sometimes classify interview-scheduling mail as a job Offer because of the
+ * word "offer". A real offer talks terms — an "Offer" that schedules an
+ * interview time and never mentions compensation/contract is an Invitation.
+ */
+export function guardOfferDowngrade(analysis: Analysis, emailText: string): Analysis {
+  if (
+    analysis.category !== "Offer" ||
+    !analysis.interview_datetime ||
+    COMPENSATION_RE.test(emailText)
+  ) {
+    return analysis;
+  }
+  return {
+    ...analysis,
+    category: "Invitation",
+    step: /offer/i.test(analysis.step) ? "Interview" : analysis.step,
+  };
+}
+
 export function normalizeAnalysis(raw: unknown): Analysis | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;

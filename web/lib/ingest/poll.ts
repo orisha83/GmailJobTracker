@@ -22,7 +22,7 @@ import {
 } from "@/lib/google/sheets";
 import { notifyDigest, type AlertItem } from "@/lib/notify";
 import { config } from "@/lib/config";
-import type { EmailAnalyzer } from "@/lib/ai/analyzer";
+import { guardOfferDowngrade, type EmailAnalyzer } from "@/lib/ai/analyzer";
 import { getAnalyzer } from "@/lib/ai";
 import { classifyHeuristically, looksLikeInvitation } from "@/lib/classify/heuristics";
 
@@ -163,6 +163,7 @@ export async function runPoll(analyzer: EmailAnalyzer = getAnalyzer()): Promise<
         result.failed++;
         continue; // transient failure → retry next run (not marked processed)
       }
+      analysis = guardOfferDowngrade(analysis, `${message.subject}\n${message.body}`);
     }
 
     result.scanned++;

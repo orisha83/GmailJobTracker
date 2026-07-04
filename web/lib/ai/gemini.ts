@@ -24,7 +24,7 @@ Classify "category":
 - "Invitation": the email asks the candidate to act NOW — schedule/attend an interview, phone screen, HR conversation, or complete/submit a home assignment. A concrete next step is requested.
 - "Applied": acknowledgement only — application received / under review, or "we'll contact you IF there's a match". No action requested now (conditional/future language counts here).
 - "Rejection": not moving forward.
-- "Offer": an offer is being extended.
+- "Offer": a JOB OFFER of employment is being extended — compensation/salary, contract, offer letter, or start-date terms. Offering an interview, a call, or a time slot is NOT an Offer — that is an "Invitation".
 - "Other": job-related but none of the above.
 
 "step": a SHORT label (2-4 words) describing this specific step, used as the position's status. Identify the interview round / who it's with when stated, e.g. "HR screen", "Phone screen", "Recruiter call", "Hiring manager interview", "PM interview", "VP interview", "CEO interview", "Technical interview", "Home assignment", "Final round". For Applied use "Applied"; Rejection "Rejected"; Offer "Offer".
@@ -35,6 +35,11 @@ Crucial — conditional/future contact is NOT an invitation:
 - "We received your CV; if there's a match we'll contact you for a call." => category "Applied".
 - "We'd like to schedule a 30-min call this week — what times work?" => "Invitation", step e.g. "Recruiter call".
 - "Please complete the attached assignment by Sunday." => "Invitation", step "Home assignment".
+
+Crucial — the word "offer" around an interview is NOT a job offer:
+- "We'd like to offer you an interview slot on Tuesday." => "Invitation", step e.g. "Interview".
+- "נשמח להציע לך להתקדם לראיון" => "Invitation".
+- "Attached is your offer letter; base salary and start date inside." / "מצורפת הצעת השכר" => "Offer".
 
 The email was received at: ${input.emailDate} (timezone ${timezone}).
 If the email proposes a specific date/time (incl. relative phrases like "next Tuesday at 3pm"), resolve it to an absolute ISO 8601 timestamp using the received date. Otherwise null.

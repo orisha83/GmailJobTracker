@@ -22,8 +22,12 @@ const INVITATION_RE =
 
 // Broader interview/recruiter signal — used to decide whether an unclassified
 // email is worth an (expensive, capped) AI call vs. skipped as noise.
+// Bare "offer" stays on purpose: real offers phrase it freely ("pleased to
+// extend an offer") and a false positive here only costs one AI call, while a
+// false negative silently loses an offer email. The "offer you an interview"
+// misread is handled downstream (prompt + guardOfferDowngrade), not by the gate.
 const INTERVIEW_SIGNAL_RE =
-  /(interview|phone screen|screening|recruiter|talent acquisition|hiring manager|next step|move forward|schedule|availability|set up a|chat with|speak with|home assignment|assessment|offer|ראיון|זימון|לתאם|שיחה (?:עם|טלפונית)|מעוניינים לראיין|הצעת עבודה)/i;
+  /(interview|phone screen|screening|recruiter|talent acquisition|hiring manager|next step|move forward|schedule|availability|set up a|chat with|speak with|home assignment|assessment|offer|ראיון|זימון|לתאם|שיחה (?:עם|טלפונית)|מעוניינים לראיין|הצעת עבודה|הצעת שכר)/i;
 
 /**
  * Should an email the rules couldn't classify be sent to the AI? Only if it

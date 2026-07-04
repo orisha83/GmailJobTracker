@@ -185,6 +185,51 @@ describe("runPoll — per-message dedup (the missed-reply bug)", () => {
   });
 });
 
+describe("runPoll — offer guard (the false-Offer bug)", () => {
+  it("downgrades a model 'Offer' that schedules an interview with no compensation language", async () => {
+    feed([
+      fm({
+        id: "m-slot",
+        subject: "Next steps at AppsFlyer",
+        body: "We'd like to offer you an interview slot on Monday, July 6 at 12:00.",
+      }),
+    ]);
+    // The model misreads "offer you an interview slot" as a job offer.
+    const analyzer = spyAnalyzer(
+      an({ category: "Offer", step: "Offer", interview_datetime: "2026-07-06T12:00:00" }),
+    );
+
+    const result = await runPoll(analyzer);
+
+    const rows = vi.mocked(appendRows).mock.calls[0][1];
+    expect(rows[0].category).toBe("Invitation");
+    expect(rows[0].step).toBe("Interview");
+    const alerts = vi.mocked(notifyDigest).mock.calls[0][1];
+    expect(alerts[0].category).toBe("Invitation");
+    expect(result.invitations).toBe(1);
+    expect(result.offers).toBe(0);
+  });
+
+  it("keeps a real offer (compensation language present)", async () => {
+    feed([
+      fm({
+        id: "m-real",
+        subject: "Your offer letter",
+        body: "Attached is your offer letter — base salary, equity and start date inside. Call Monday 10:00 to review.",
+      }),
+    ]);
+    const analyzer = spyAnalyzer(
+      an({ category: "Offer", step: "Offer", interview_datetime: "2026-07-06T10:00:00" }),
+    );
+
+    const result = await runPoll(analyzer);
+
+    const rows = vi.mocked(appendRows).mock.calls[0][1];
+    expect(rows[0].category).toBe("Offer");
+    expect(result.offers).toBe(1);
+  });
+});
+
 describe("runPoll — legacy (v1 per-thread) marker compatibility", () => {
   it("suppresses pre-watermark mail in a legacy thread without marking it processed", async () => {
     // The legacy marker means "this thread was settled up to the watermark";

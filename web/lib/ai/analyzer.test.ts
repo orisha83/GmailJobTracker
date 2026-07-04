@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeAnalysis } from "./analyzer";
+import { guardOfferDowngrade, normalizeAnalysis, type Analysis } from "./analyzer";
 
 describe("normalizeAnalysis", () => {
   it("returns null for non-objects", () => {
@@ -62,5 +62,70 @@ describe("normalizeAnalysis", () => {
       apply_url: "https://acme.com/careers/pm",
       interviewer_name: "Jane Doe",
     });
+  });
+});
+
+describe("guardOfferDowngrade — 'offer you an interview' is not a job offer", () => {
+  function offer(partial: Partial<Analysis> = {}): Analysis {
+    return {
+      is_relevant: true,
+      company: "AppsFlyer",
+      role: "Product Manager",
+      category: "Offer",
+      step: "Offer",
+      interview_datetime: "2026-07-06T12:00:00",
+      summary: "",
+      apply_url: "",
+      interviewer_name: "",
+      ...partial,
+    };
+  }
+
+  it("downgrades Offer + interview time + no compensation language to Invitation", () => {
+    const a = guardOfferDowngrade(
+      offer(),
+      "Interview slot\nWe'd like to offer you an interview slot on Monday at noon.",
+    );
+    expect(a.category).toBe("Invitation");
+    expect(a.step).toBe("Interview"); // "Offer" step replaced too
+  });
+
+  it("downgrades the Hebrew interview-slot phrasing", () => {
+    const a = guardOfferDowngrade(offer(), "נשמח להציע לך להתקדם לראיון ביום שלישי בשעה 12:00");
+    expect(a.category).toBe("Invitation");
+  });
+
+  it("keeps a real offer that talks compensation, even with a meeting time", () => {
+    const a = guardOfferDowngrade(
+      offer(),
+      "Your offer letter\nAttached is your offer letter — base salary and equity inside. Let's sign on Monday at 10:00.",
+    );
+    expect(a.category).toBe("Offer");
+    expect(a.step).toBe("Offer");
+  });
+
+  it("keeps a Hebrew salary offer", () => {
+    const a = guardOfferDowngrade(offer(), "מצורפת הצעת שכר לתפקיד. נשמח לשיחה ביום שני.");
+    expect(a.category).toBe("Offer");
+  });
+
+  it("leaves an Offer without a scheduled interview time alone", () => {
+    const a = guardOfferDowngrade(offer({ interview_datetime: null }), "We are pleased to make you an offer.");
+    expect(a.category).toBe("Offer");
+  });
+
+  it("keeps a model-specific step when downgrading (only 'Offer'-ish steps are replaced)", () => {
+    const a = guardOfferDowngrade(
+      offer({ step: "Hiring manager interview" }),
+      "We'd like to offer you a slot for the hiring manager interview on Tuesday.",
+    );
+    expect(a.category).toBe("Invitation");
+    expect(a.step).toBe("Hiring manager interview");
+  });
+
+  it("never touches non-Offer categories", () => {
+    const a = guardOfferDowngrade(offer({ category: "Invitation", step: "HR screen" }), "anything");
+    expect(a.category).toBe("Invitation");
+    expect(a.step).toBe("HR screen");
   });
 });
