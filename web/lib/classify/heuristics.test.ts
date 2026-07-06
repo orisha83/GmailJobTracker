@@ -91,6 +91,81 @@ describe("looksLikeInvitation", () => {
   });
 });
 
+describe("company extraction — recruiter/person senders and odd subjects", () => {
+  it("prefers the subject's company over a recruiter's personal sender name", () => {
+    const a = classifyHeuristically(
+      msg({
+        senderName: "Channi Refaelovich",
+        senderDomain: "residenthome.com",
+        subject: "Thank you for applying to Ashley Digital.",
+        body: "Thank you for applying. Unfortunately we won't be moving forward.",
+      }),
+    );
+    expect(a?.company).toBe("Ashley Digital");
+  });
+
+  it("reads 'position at X' subjects sent by a person", () => {
+    const a = classifyHeuristically(
+      msg({
+        senderName: "Dinor Shahaf",
+        senderDomain: "careers.gambit.security",
+        subject: "Thank you for applying for the Senior Product Manager position at Gambit Security",
+        body: "Unfortunately we decided to proceed with other candidates.",
+      }),
+    );
+    expect(a?.company).toBe("Gambit Security");
+  });
+
+  it("never mistakes 'applying to the X role' for a company (falls back to domain)", () => {
+    const a = classifyHeuristically(
+      msg({
+        senderName: "no-reply@aidoc.com",
+        senderDomain: "aidoc.com",
+        subject: "Aidoc 👋 Thanks for applying to the Platform Product Manager role",
+        body: "Thank you for applying. Our team is reviewing your application.",
+      }),
+    );
+    expect(a?.company).toBe("Aidoc");
+  });
+
+  it("understands 'your application to X' subjects", () => {
+    const a = classifyHeuristically(
+      msg({
+        senderName: "no-reply@eu.greenhouse-mail.io",
+        senderDomain: "eu.greenhouse-mail.io",
+        subject: "Important information about your application to Guidde",
+        body: "We have decided to proceed with other candidates.",
+      }),
+    );
+    expect(a?.company).toBe("Guidde");
+  });
+
+  it("uses the ATS 'on behalf of' line when the subject names no company", () => {
+    const a = classifyHeuristically(
+      msg({
+        senderName: "Shani Moshe",
+        senderDomain: "aquasec.comeet-notifications.com",
+        subject: "An update on your application",
+        body: "Sent by Spark Hire Recruit on behalf of Aqua Security. Unfortunately we will not be moving forward.",
+      }),
+    );
+    expect(a?.company).toBe("Aqua Security");
+  });
+
+  it("strips a trailing emoji from subject-extracted companies and rejects gerund roles", () => {
+    const a = classifyHeuristically(
+      msg({
+        senderName: "Tal Fisko - Ubeya",
+        senderDomain: "ubeya.teamtailor-mail.com",
+        subject: "Thank You for Applying to Ubeya 🏟️",
+        body: "We have decided not to move forward with your application at this time.",
+      }),
+    );
+    expect(a?.company).toBe("Ubeya");
+    expect(a?.role).toBe("Unknown"); // not "Applying to Ubeya 🏟️"
+  });
+});
+
 describe("rejections that open with ack language (the Aidoc miss)", () => {
   it("classifies 'decided not to continue with the process' as a Rejection", () => {
     const a = classifyHeuristically(

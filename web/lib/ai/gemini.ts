@@ -20,6 +20,8 @@ Analyze one email (it may be in Hebrew or English) and report the candidate's CU
 
 Set "is_relevant" to true for ANY job-application-related email, false for unrelated mail (newsletters, marketing, personal).
 
+"company": the HIRING company the candidate applied to — take it from the email body/subject/signature (e.g. "the Product Manager position at Blockaid"), NOT the sender's personal name. A recruiter (a person) often sends on behalf of the company; report the company, not the recruiter. Sender hints — name: "${input.senderName ?? ""}", domain: "${input.senderDomain ?? ""}". Translate to English if Hebrew.
+
 Classify "category":
 - "Invitation": the email asks the candidate to act NOW — schedule/attend an interview, phone screen, HR conversation, or complete/submit a home assignment. A concrete next step is requested.
 - "Applied": acknowledgement only — application received / under review, or "we'll contact you IF there's a match". No action requested now (conditional/future language counts here).

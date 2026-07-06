@@ -64,16 +64,38 @@ function titleizeDomain(domain: string): string {
   return label ? label.charAt(0).toUpperCase() + label.slice(1) : "Unknown";
 }
 
+// A subject capture that is actually a ROLE, not a company ("applying to the
+// Platform Product Manager role").
+const ROLE_NOT_COMPANY_RE = /^the\b|\b(?:role|position|opening)s?$/i;
+
+function subjectCompany(subject: string): string {
+  const s = subject || "";
+  const m =
+    s.match(/(?:applying|application|applied) (?:to|with|at|for a position at)\s+([A-Za-z0-9][\w .&'\-]{1,40})/i) ||
+    s.match(/(?:position|role) (?:at|with)\s+([A-Za-z0-9][\w .&'\-]{1,40})/i) ||
+    s.match(/\bat\s+([A-Z][\w .&'\-]{1,40})/);
+  if (!m) return "";
+  const c = cleanCompany(m[1]).replace(/[^\w)']+$/g, "").trim();
+  return ROLE_NOT_COMPANY_RE.test(c) ? "" : c;
+}
+
 function extractCompany(msg: FetchedMessage): string {
+  // Explicit naming beats the sender's display name: recruiters send from
+  // their PERSONAL name ("Channi Refaelovich") while the subject/body says
+  // which company the application is with.
+  const fromSubject = subjectCompany(msg.subject);
+  if (fromSubject) return fromSubject;
+
+  // ATS relay bodies state it outright: "Sent by X Recruit on behalf of Acme".
+  const behalf = (msg.body || "").match(/on behalf of\s+([A-Z][\w .&'\-]{1,40})/i);
+  if (behalf) {
+    // Cut at the sentence boundary (". " keeps "Monday.com"-style names intact).
+    const c = cleanCompany(behalf[1].split(/\.\s|[,;\n]/)[0]).replace(/[^\w)']+$/g, "").trim();
+    if (c) return c;
+  }
+
   const cleaned = cleanCompany(msg.senderName || "");
   if (cleaned && !GENERIC_SENDER_RE.test(msg.senderName || "")) return cleaned;
-
-  const s = msg.subject || "";
-  const m =
-    s.match(/applying (?:to|with)\s+([A-Za-z0-9][\w .&'\-]{1,40})/i) ||
-    s.match(/position (?:at|with)\s+([A-Za-z0-9][\w .&'\-]{1,40})/i) ||
-    s.match(/\bat\s+([A-Z][\w .&'\-]{1,40})/);
-  if (m) return cleanCompany(m[1]).replace(/[.,!]$/, "").trim();
 
   return msg.senderDomain ? titleizeDomain(msg.senderDomain) : cleaned || "Unknown";
 }
@@ -92,9 +114,11 @@ function extractRole(subject: string): string {
     /(?:\s+|(?<=[a-z]))(?:at|@|with|position|role|opening|opportunity|req|requisition)\b/i,
   )[0];
   role = role
-    .replace(/[\s.,!:;|()\-–—]+$/, "")
+    .replace(/[^\w)']+$/g, "") // trailing punctuation/emoji
     .replace(/\s+/g, " ")
     .trim();
+  // "Thank You for Applying to Ubeya" → capture "Applying to Ubeya" is not a role.
+  if (/^apply/i.test(role)) return "Unknown";
   return role.length >= 2 && role.length <= 60 ? role : "Unknown";
 }
 
