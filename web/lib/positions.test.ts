@@ -150,6 +150,77 @@ describe("derivePositionState — manual override precedence", () => {
   });
 });
 
+describe("buildPositions — distinct companies sharing a brand prefix (Papaya)", () => {
+  it("keeps Papaya Gaming and Papaya Global separate; one's rejection can't close the other", () => {
+    const rows = [
+      job({
+        messageId: "pg1",
+        threadId: "t-global",
+        company: "Papaya Global",
+        companyKey: "papayaglobal",
+        role: "Director - Product Management",
+        received: "2026-07-01T09:00:00.000Z",
+        category: "Invitation",
+        step: "Hiring manager interview",
+        interviewDateTime: FUTURE,
+      }),
+      job({
+        messageId: "gm1",
+        threadId: "t-gaming",
+        company: "Papaya Gaming",
+        companyKey: "papaya",
+        role: "Senior Product Manager",
+        received: "2026-07-04T09:00:00.000Z",
+      }),
+      job({
+        messageId: "gm2",
+        threadId: "t-gaming2",
+        company: "Papaya Gaming",
+        companyKey: "papaya",
+        role: "Senior Product Manager",
+        received: "2026-07-06T09:00:00.000Z",
+        category: "Rejection",
+        step: "Rejected",
+      }),
+    ];
+    const positions = buildPositions(rows);
+    expect(positions).toHaveLength(2);
+    const global = positions.find((p) => p.company === "Papaya Global");
+    const gaming = positions.find((p) => p.company === "Papaya Gaming");
+    expect(global?.status).toBe("Hiring manager interview");
+    expect(global?.nextInterview).toBe(FUTURE);
+    expect(gaming?.status).toBe("Rejected");
+  });
+
+  it("still merges one-edit spelling variants of the same company", () => {
+    const positions = buildPositions([
+      job({ messageId: "a1", threadId: "t1", company: "AppFlyer", companyKey: "appflyer" }),
+      job({
+        messageId: "a2",
+        threadId: "t2",
+        company: "AppsFlyer",
+        companyKey: "appsflyer",
+        received: "2026-07-02T09:00:00.000Z",
+      }),
+    ]);
+    expect(positions).toHaveLength(1);
+  });
+
+  it("still merges specific-enough containment keys (7+ chars)", () => {
+    const positions = buildPositions([
+      job({ messageId: "s1", threadId: "t1", company: "Transmit", companyKey: "transmitsecurity" }),
+      job({
+        messageId: "s2",
+        threadId: "t2",
+        company: "Transmit Security",
+        companyKey: "transmit",
+        received: "2026-07-02T09:00:00.000Z",
+      }),
+    ]);
+    expect(positions).toHaveLength(1);
+  });
+});
+
 describe("buildPositions — segmentation still works with derived status", () => {
   it("splits a company card at a rejection; a later re-apply starts fresh", () => {
     const rows = [

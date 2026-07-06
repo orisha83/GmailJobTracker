@@ -105,12 +105,15 @@ function within1Edit(a: string, b: string): boolean {
 }
 
 // Two company keys are the same company if they differ by ≤1 edit (spelling
-// variant) or one contains the other (e.g. "papaya" ⊂ "papayaglobal"). The
-// length floor keeps short, distinct names from being merged.
+// variant) or one contains the other ("sweetsecurity" ⊃ "sweetsecure"). The
+// length floor keeps short brand prefixes from swallowing distinct companies:
+// "papaya" (Papaya Gaming) ⊂ "papayaglobal" (Papaya Global) are DIFFERENT
+// employers — merging them let one company's rejection close the other's
+// position. Containment only counts when the shorter key is specific enough.
 function sameCompany(a: string, b: string): boolean {
   if (a === "unknown" || b === "unknown") return false;
   if (within1Edit(a, b)) return true;
-  if (a.length >= 5 && b.length >= 5 && (a.includes(b) || b.includes(a))) return true;
+  if (a.length >= 7 && b.length >= 7 && (a.includes(b) || b.includes(a))) return true;
   return false;
 }
 
