@@ -260,7 +260,8 @@ the repair scripts above. Ask Claude to run it if you want a clean slate.
 |---|---|
 | `/api/health` lists `missingConfig` | That env var isn't set (or is empty) — set it and restart |
 | `401 Unauthorized` on `/api/cron/poll` | `Authorization: Bearer <CRON_SECRET>` header missing or mismatched |
-| "Google hasn't verified this app" | Expected (Testing mode) — Advanced → Go to … (unsafe) |
+| "Google hasn't verified this app" | Expected (unverified app) — Advanced → Go to … (unsafe) |
+| `invalid_grant` on the dashboard / all API calls | The refresh token expired or was revoked. **Testing-mode OAuth apps expire refresh tokens after 7 days** — on the OAuth consent screen click **"Publish app"** (no verification needed for personal use), then redo the `/api/auth/google` flow and update `GOOGLE_REFRESH_TOKEN` locally + in Vercel |
 | `scanned: 0` every run | Your `SEARCH_QUERY` matches nothing, or `INGEST_START_DATE` is in the future |
 | Gemini errors after some runs | Free-tier daily quota spent — resets ~midnight Pacific, or switch to `claude` |
 | Vercel build can't find the app | Root Directory isn't set to `web` (Step 9.2) |
