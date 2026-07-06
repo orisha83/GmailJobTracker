@@ -91,6 +91,41 @@ describe("looksLikeInvitation", () => {
   });
 });
 
+describe("rejections that open with ack language (the Aidoc miss)", () => {
+  it("classifies 'decided not to continue with the process' as a Rejection", () => {
+    const a = classifyHeuristically(
+      msg({
+        subject: "Aidoc | Thank you for your interest in the Platform Product Manager role",
+        body: "Thank you for applying to the Platform Product Manager role at Aidoc. After reviewing your application, we've decided not to continue with the process at this stage. Wishing you all the best in your search.",
+      }),
+    );
+    expect(a?.category).toBe("Rejection");
+    expect(a?.step).toBe("Rejected");
+  });
+
+  it("defers an ack with a rejection-ish cue to the AI instead of shortcutting", () => {
+    // Real QuantHealth ack: conditional-future language + "best of luck"
+    // boilerplate. Not clearly a rejection → the AI must read it.
+    const a = classifyHeuristically(
+      msg({
+        subject: "Thank you for applying to QuantHealth",
+        body: "We received your application for the Senior Product Manager position. Our team will review your application and will contact you if your qualifications match. Thank you again and we wish you the best of luck!",
+      }),
+    );
+    expect(a).toBeNull();
+  });
+
+  it("still shortcuts an ack without any rejection cue", () => {
+    const a = classifyHeuristically(
+      msg({
+        subject: "Application received",
+        body: "Thank you for applying. Our team is reviewing your application and will contact you about next steps.",
+      }),
+    );
+    expect(a?.category).toBe("Applied");
+  });
+});
+
 describe("invitation phrasing with an adjective round name", () => {
   it("defers an ack + 'invite you to a phone interview' to the AI (not rule-Applied)", () => {
     const a = classifyHeuristically(

@@ -14,7 +14,15 @@ const ACK_RE =
   /(thank you for applying|thanks for applying|thank you for your (?:interest|application)|we(?:'ve| have| ?)? ?(?:got it|received your (?:application|cv|resume))|application (?:has been )?received|received your application|we are reviewing your application|under review|תודה על (?:הגשת|פנייתך|התעניינות|הגשתך)|קיבלנו את (?:מועמדות|פנייתך|קורות)|מועמדות[ךn]? התקבלה)/i;
 
 const REJECTION_RE =
-  /(unfortunately|we (?:regret|are sorry) to inform|regret to inform|not (?:be )?(?:moving|proceeding|progressing) forward|will not be (?:moving|proceeding|progressing)|won'?t be (?:moving|proceeding)|decided (?:not to (?:move|proceed)|to (?:move|proceed) with other)|other candidates|move forward with other|position (?:has been|was|is now) filled|no longer (?:available|under consideration)|not (?:to )?(?:be )?selected|wish you (?:the best|success) in your|לצערנו|לא נמשיך|לא נתקדם|לא נוכל להמשיך|הוחלט (?:שלא|לא)|לא נבחרת|מאחל(?:ים)? לך הצלחה)/i;
+  /(unfortunately|we (?:regret|are sorry) to inform|regret to inform|not (?:be )?(?:moving|proceeding|progressing|continuing) (?:forward|with)|will not be (?:moving|proceeding|progressing|continuing)|won'?t be (?:moving|proceeding|continuing)|(?:decided|chosen) (?:not to (?:move|proceed|continue|advance|progress)|to (?:move|proceed) with other)|other candidates|move forward with other|position (?:has been|was|is now) filled|no longer (?:available|under consideration)|not (?:to )?(?:be )?selected|wish(?:ing)? you (?:all )?(?:the best|success) in your|לצערנו|לא נמשיך|לא נתקדם|לא נוכל להמשיך|הוחלט (?:שלא|לא)|לא נבחרת|מאחל(?:ים)? לך הצלחה)/i;
+
+// Weak rejection-ish cues ("best of luck", "future opportunities", "not to
+// continue"). Alone they prove nothing — ack templates use them too — but an
+// acknowledgement carrying one is no longer safe to shortcut: rejections often
+// OPEN with "thank you for applying" (the Aidoc miss). Ack + cue → let the AI
+// read the whole email.
+const REJECTION_CUE_RE =
+  /(not to (?:continue|proceed|move|advance|progress)|at this (?:stage|time|point)[,.]|best of luck|wish(?:ing)? you (?:all )?the best|future (?:opportunities|openings|roles)|better fit|keep (?:an eye on|you(?:r CV| in mind))|לא להמשיך|בשלב זה|בהצלחה|הזדמנויות עתידיות)/i;
 
 // Strong, present-tense invitation language → don't shortcut; let the AI decide.
 const INVITATION_RE =
@@ -108,9 +116,10 @@ export function classifyHeuristically(msg: FetchedMessage): Analysis | null {
     return { ...base, category: "Rejection", step: "Rejected", summary: msg.subject };
   }
 
-  // Acknowledgement, but only shortcut when there's no real invitation ask.
+  // Acknowledgement, but only shortcut when there's no real invitation ask
+  // AND no rejection-ish cue — rejections often open with ack language.
   if (ACK_RE.test(text)) {
-    if (INVITATION_RE.test(text)) return null; // mixed → let AI decide
+    if (INVITATION_RE.test(text) || REJECTION_CUE_RE.test(text)) return null; // mixed → let AI decide
     return { ...base, category: "Applied", step: "Applied", summary: msg.subject };
   }
 
