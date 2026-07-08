@@ -203,6 +203,7 @@ Set these in `web/.env.local` (local) and in Vercel → Settings → Environment
 | `ANTHROPIC_MODEL` | — | `claude-haiku-4-5` | Anthropic model id |
 | `GEMINI_API_KEY` | if `gemini` | — | Gemini key (Step 5B) |
 | `GEMINI_MODEL` | — | `gemini-2.5-flash-lite` | Gemini model id |
+| `GEMINI_FALLBACK_MODEL` | — | `gemini-2.5-flash` | Auto-tried when the primary model returns 429/503 |
 | `SEARCH_QUERY` | — | bilingual default | Gmail search query for what counts as a job email |
 | `TIMEZONE` | — | `Asia/Jerusalem` | IANA tz for date math + dashboard display |
 | `CANDIDATE_NAME` | — | — | Your full name — keeps the AI from listing you as your own interviewer |

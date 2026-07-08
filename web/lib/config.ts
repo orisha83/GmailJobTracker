@@ -78,6 +78,10 @@ export const config = {
     // each model id has its own daily allowance. Deferred mail is retried
     // next run, so hitting the cap loses nothing.
     model: env("GEMINI_MODEL") ?? "gemini-2.5-flash-lite",
+    // Tried automatically when the primary model returns 429/503 (each model
+    // id has separate capacity/quota) — one overloaded model must not stall
+    // an interview invitation for hours. Set equal to GEMINI_MODEL to disable.
+    fallbackModel: env("GEMINI_FALLBACK_MODEL") ?? "gemini-2.5-flash",
   },
   ingest: {
     searchQuery: env("SEARCH_QUERY") ?? DEFAULT_SEARCH_QUERY,

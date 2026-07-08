@@ -68,47 +68,70 @@ Respond ONLY with a valid JSON object (no markdown fences) using exactly this st
 }`;
 }
 
+type CallResult =
+  | { kind: "ok"; analysis: Analysis | null }
+  | { kind: "retryable"; status: number } // 429/503 — the MODEL is busy, not us
+  | { kind: "fatal" };
+
 export class GeminiAnalyzer implements EmailAnalyzer {
   constructor(
     private readonly apiKey = config.gemini.apiKey,
     private readonly model = config.gemini.model,
     private readonly timezone = config.ingest.timezone,
+    private readonly fallbackModel = config.gemini.fallbackModel,
   ) {}
 
   async analyze(input: EmailInput): Promise<Analysis | null> {
     if (!this.apiKey) throw new Error("GEMINI_API_KEY is not configured");
+    const prompt = buildPrompt(input, this.timezone);
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent?key=${this.apiKey}`;
-    const payload = {
-      contents: [{ parts: [{ text: buildPrompt(input, this.timezone) }] }],
-      generationConfig: { responseMimeType: "application/json" },
-    };
+    const first = await this.callModel(this.model, prompt);
+    if (first.kind === "ok") return first.analysis;
 
-    // No in-call retry: a 429 here just means "try this thread next run". The
-    // poller spaces calls and defers leftovers, so retrying inline only
-    // amplifies load against the free-tier rate limit.
+    // 429/503 are per-MODEL conditions (each model id has its own capacity and
+    // daily allowance), so one hop to a sibling model usually succeeds — an
+    // overloaded model must not stall an interview invitation for hours.
+    // We never retry the SAME model inline: that only amplifies load against
+    // its rate limit; the poller defers and retries next run instead.
+    if (first.kind === "retryable" && this.fallbackModel && this.fallbackModel !== this.model) {
+      console.error(
+        `Gemini ${this.model} unavailable (${first.status}) — trying ${this.fallbackModel}`,
+      );
+      const second = await this.callModel(this.fallbackModel, prompt);
+      if (second.kind === "ok") return second.analysis;
+    }
+    return null;
+  }
+
+  private async callModel(model: string, prompt: string): Promise<CallResult> {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${this.apiKey}`;
     try {
       const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { responseMimeType: "application/json" },
+        }),
       });
 
       if (!res.ok) {
-        console.error(`Gemini API error ${res.status}: ${await res.text()}`);
-        return null;
+        console.error(`Gemini API error ${res.status} (${model}): ${await res.text()}`);
+        return res.status === 429 || res.status === 503
+          ? { kind: "retryable", status: res.status }
+          : { kind: "fatal" };
       }
 
       const json = (await res.json()) as {
         candidates?: { content?: { parts?: { text?: string }[] } }[];
       };
       const text = json.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!text) return null;
+      if (!text) return { kind: "ok", analysis: null };
 
-      return normalizeAnalysis(JSON.parse(text));
+      return { kind: "ok", analysis: normalizeAnalysis(JSON.parse(text)) };
     } catch (err) {
-      console.error("Gemini analyze failed:", err);
-      return null;
+      console.error(`Gemini analyze failed (${model}):`, err);
+      return { kind: "fatal" };
     }
   }
 }
