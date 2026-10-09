@@ -140,3 +140,7 @@ describe("email-address company names (old extractor fallback)", () => {
     expect(companyKeyFor(name)).toBe(key);
   });
 });
+
+it("Hebrew company names get their own key (not 'unknown')", () => {
+  expect(companyKeyFor("אלביט מערכות")).toBe("אלביטמערכות");
+});

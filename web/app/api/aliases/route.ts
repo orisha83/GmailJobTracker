@@ -6,7 +6,7 @@ import type { Alias } from "@/lib/positions";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const KEY_RE = /^[a-z0-9.\-]{1,80}$/;
+const KEY_RE = /^[a-z0-9.\-\u05d0-\u05ea]{1,80}$/;
 
 function fail(error: string, status: number) {
   return NextResponse.json({ ok: false, error }, { status });

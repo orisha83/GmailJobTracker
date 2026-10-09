@@ -3,6 +3,7 @@
 //
 //   node --env-file=.env.local scripts/reprocess.mjs             # dry run (diff only)
 //   node --env-file=.env.local scripts/reprocess.mjs --apply     # write corrections
+//   ... --rules-only   # no AI calls: rule corrections + company re-filing only
 //   node --env-file=.env.local scripts/reprocess.mjs --base https://your.app
 //
 // Talks to /api/admin/reprocess and loops until the whole sheet is covered
@@ -10,6 +11,8 @@
 
 const args = process.argv.slice(2);
 const apply = args.includes("--apply");
+// --rules-only: no AI calls — rule corrections + company re-filing only.
+const rulesOnly = args.includes("--rules-only");
 const base = args.includes("--base")
   ? args[args.indexOf("--base") + 1]
   : "http://localhost:3000";
@@ -26,14 +29,24 @@ const allChanges = [];
 let startRow = args.includes("--start") ? Number(args[args.indexOf("--start") + 1]) : undefined;
 let pass = 0;
 
+let quotaWaits = 0;
 for (;;) {
   pass++;
   const res = await fetch(`${base}/api/admin/reprocess`, {
     method: "POST",
     headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ dryRun: !apply, limit: limitArg, startRow }),
+    body: JSON.stringify({ dryRun: !apply, limit: limitArg, startRow, rulesOnly }),
   });
   const report = await res.json();
+  // Gmail's per-minute quota (raw recovery): nothing was written — wait, retry.
+  if (!report.ok && /quota exceeded/i.test(report.error ?? "") && quotaWaits < 8) {
+    quotaWaits++;
+    console.log("Gmail per-minute quota hit — waiting 65s, then retrying this pass…");
+    await new Promise((r) => setTimeout(r, 65_000));
+    pass--;
+    continue;
+  }
+  quotaWaits = 0;
   if (!res.ok || !report.ok) {
     console.error(`Pass ${pass} failed:`, report.error ?? `HTTP ${res.status}`);
     if (startRow) console.error(`Resume later with: --start ${startRow}`);

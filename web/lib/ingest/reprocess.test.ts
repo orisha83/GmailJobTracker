@@ -388,3 +388,52 @@ describe("runReprocess — company re-resolution", () => {
     );
   });
 });
+
+it("a rule may correct its own earlier false rejection back to Applied (Valence)", async () => {
+  vi.mocked(readRows).mockResolvedValue([
+    row({ rowNumber: 2, messageId: "m1", company: "Valence", category: "Rejection", step: "Rejected", source: "rule" }),
+  ]);
+  vi.mocked(readRawEmails).mockResolvedValue(
+    new Map([
+      [
+        "m1",
+        raw({
+          senderName: "Valence",
+          senderDomain: "valence.comeet-notifications.com",
+          subject: "Here we go! Your application to Valence has just been received",
+          body: "We have received your application. If you are not selected for this position, please check our page later.",
+        }),
+      ],
+    ]),
+  );
+  const report = await runReprocess({ dryRun: true }, spyAnalyzer([]));
+  expect(report.changes).toContainEqual(
+    expect.objectContaining({ field: "category", oldValue: "Rejection", newValue: "Applied" }),
+  );
+});
+
+it("re-fetches a truncated cached HTML body instead of classifying the fragment (HiBob)", async () => {
+  vi.mocked(readRows).mockResolvedValue([
+    row({ rowNumber: 2, messageId: "m1", company: "HiBob", category: "Rejection", step: "Rejected", source: "rule" }),
+  ]);
+  const truncated = "<h2 style='x'>Thank you for applying</h2>" + "<p style='a'>".repeat(400);
+  vi.mocked(readRawEmails).mockResolvedValue(new Map([["m1", raw({ body: truncated.slice(0, 4000) })]]));
+  vi.mocked(fetchMessage).mockResolvedValue({
+    id: "m1", threadId: "t1", subject: "Thank you for applying", date: "2026-07-01T09:00:00.000Z",
+    body: "Thank you for applying. Unfortunately we decided to move forward with other candidates.",
+    senderName: "HiBob", senderDomain: "hibob.com", links: [], isSelfNotification: false,
+  });
+  const report = await runReprocess({ dryRun: true }, spyAnalyzer([]));
+  expect(fetchMessage).toHaveBeenCalledWith(expect.anything(), "m1");
+  expect(report.backfilledRaw).toBe(1);
+  expect(report.changes.filter((c) => c.field === "category")).toEqual([]); // stays Rejection
+});
+
+it("rulesOnly never calls the AI", async () => {
+  vi.mocked(readRows).mockResolvedValue([row({ rowNumber: 2, messageId: "m1", category: "Applied", step: "Applied" })]);
+  vi.mocked(readRawEmails).mockResolvedValue(new Map([["m1", raw({})]])); // an interview invite → would need AI
+  const analyzer = spyAnalyzer([invitation]);
+  const report = await runReprocess({ dryRun: true, rulesOnly: true }, analyzer);
+  expect(analyzer.analyze).not.toHaveBeenCalled();
+  expect(report.aiCalls).toBe(0);
+});

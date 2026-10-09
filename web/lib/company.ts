@@ -42,9 +42,10 @@ const SUFFIX_WORDS = new Set([
   "manager",
 ]);
 
-/** Lower-case word tokens of a company name (Latin letters/digits only). */
+/** Lower-case word tokens of a company name (Latin/Hebrew letters, digits). */
 function tokens(name: string): string[] {
-  return (name || "").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  // Hebrew letters count: "אלביט מערכות" must not collapse into "unknown".
+  return (name || "").toLowerCase().split(/[^a-z0-9\u05d0-\u05ea]+/).filter(Boolean);
 }
 
 // ATS / scheduling relays: the sender domain names the vendor, not the employer.
@@ -73,6 +74,8 @@ const ATS_DOMAINS = [
   "successfactors.com",
   "recruitee.com",
   "pinpointhq.com",
+  "hunterhrms.com",
+  "civi.co.il",
   "calendly.com",
 ];
 

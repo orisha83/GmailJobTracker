@@ -85,6 +85,25 @@ export async function searchMessages(
   return hits;
 }
 
+/** One page of a message search (for resumable tools that walk history). */
+export async function searchMessagesPage(
+  auth: OAuth2Client,
+  query: string,
+  pageToken?: string,
+  pageSize = 50,
+): Promise<{ hits: MessageHit[]; nextPageToken?: string }> {
+  const res = await gmailClient(auth).users.messages.list({
+    userId: "me",
+    q: query,
+    maxResults: pageSize,
+    pageToken,
+  });
+  const hits = (res.data.messages ?? [])
+    .filter((m) => m.id && m.threadId)
+    .map((m) => ({ messageId: m.id as string, threadId: m.threadId as string }));
+  return { hits, nextPageToken: res.data.nextPageToken ?? undefined };
+}
+
 /**
  * All message IDs in one thread (metadata-only — cheap), oldest first.
  * Used by the repair tools to find messages that were never analyzed under

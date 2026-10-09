@@ -15,7 +15,7 @@ const ACK_RE =
   /(thank you for applying|thanks for applying|thank you for your (?:interest|application)|we(?:'ve| have| ?)? ?(?:got it|received your (?:application|cv|resume))|application (?:has been )?received|received your application|we are reviewing your application|under review|תודה על (?:הגשת|פנייתך|התעניינות|הגשתך)|קיבלנו את (?:מועמדות|פנייתך|קורות)|מועמדות[ךn]? התקבלה)/i;
 
 const REJECTION_RE =
-  /(unfortunately|we (?:regret|are sorry) to inform|regret to inform|not (?:be )?(?:moving|proceeding|progressing|continuing) (?:forward|with)|will not be (?:moving|proceeding|progressing|continuing)|won'?t be (?:moving|proceeding|continuing)|(?:decided|chosen) (?:not to (?:move|proceed|continue|advance|progress)|to (?:move|proceed) with other)|other candidates|move forward with other|position (?:has been|was|is now) filled|no longer (?:available|under consideration)|not (?:to )?(?:be )?selected|wish(?:ing)? you (?:all )?(?:the best|success) in your|(?:mov(?:e|ing)|go(?:ing)?|proceed(?:ing)?) (?:forward )?with (?:other |another |a different |different )?(?:candidates?|applicants?|profiles?)|(?:pursue|pursuing) (?:other|another|different) (?:candidates?|applicants?|profiles?)|whose (?:experience|background|skills?|profiles?) (?:is|are|more closely|better|aligns?)|(?:closer|stronger|better) (?:fit|match) for (?:the|this|our)|not (?:a|the right) (?:fit|match) for|(?:not|un)able to (?:move forward|proceed|offer you)|position (?:has been|was) (?:closed|cancell?ed)|לצערנו|לא נמשיך|לא נתקדם|לא נוכל להמשיך|לא נוכל להתקדם|לא נוכל להציע|הוחלט (?:שלא|לא)|החלטנו (?:שלא|לא)|מועמד(?:ים|ות) אחר(?:ים|ות)|התאמה (?:טובה|גבוהה) יותר|לא נבחרת|מאחל(?:ים)? לך הצלחה)/i;
+  /(unfortunately|we (?:regret|are sorry) to inform|regret to inform|not (?:be )?(?:moving|proceeding|progressing|continuing) (?:forward|with)|will not be (?:moving|proceeding|progressing|continuing)|won'?t be (?:moving|proceeding|continuing)|(?:decided|chosen) (?:not to (?:move|proceed|continue|advance|progress)|to (?:move|proceed) with other)|other candidates|move forward with other|(?:position|role|opening) (?:has been|was|is now|is) (?:filled|closed|cancell?ed)|(?:filled|closed) the (?:position|role)|no longer (?:reviewing|accepting|considering) (?:applications|candidates)|no longer (?:available|under consideration)|(?<!if (?:you are|you're|you were) )not (?:to )?(?:be )?selected|wish(?:ing)? you (?:all )?(?:the best|success) in your|(?:mov(?:e|ing)|go(?:ing)?|proceed(?:ing)?) (?:forward )?with (?:other |another |a different |different )?(?:candidates?|applicants?|profiles?)|(?:pursue|pursuing) (?:other|another|different) (?:candidates?|applicants?|profiles?)|whose (?:experience|background|skills?|profiles?) (?:is|are|more closely|better|aligns?)|(?:closer|stronger|better) (?:fit|match) for (?:the|this|our)|not (?:a|the right) (?:fit|match) for|(?:not|un)able to (?:move forward|proceed|offer you)|לא נמצאה התאמה|לצערנו|לא נמשיך|לא נתקדם|לא נוכל להמשיך|לא נוכל להתקדם|לא נוכל להציע|הוחלט (?:שלא|לא)|החלטנו (?:שלא|לא)|מועמד(?:ים|ות) אחר(?:ים|ות)|התאמה (?:טובה|גבוהה) יותר|לא נבחרת|מאחל(?:ים)? לך הצלחה)/i;
 
 // Weak rejection-ish cues ("best of luck", "future opportunities", "not to
 // continue"). Alone they prove nothing — ack templates use them too — but an
@@ -23,7 +23,7 @@ const REJECTION_RE =
 // OPEN with "thank you for applying" (the Aidoc miss). Ack + cue → let the AI
 // read the whole email.
 const REJECTION_CUE_RE =
-  /(not to (?:continue|proceed|move|advance|progress)|at this (?:stage|time|point)[,.]|best of luck|wish(?:ing)? you (?:all )?the best|future (?:opportunities|openings|roles)|better fit|keep (?:an eye on|you(?:r CV| in mind))|after careful (?:review|consideration)|encourage you to (?:apply|check back)|(?:keep|retain) your (?:cv|resume|details|information) on file|לא להמשיך|בשלב זה|בהצלחה|הזדמנויות עתידיות|נשמור את (?:קורות|פרטי))/i;
+  /(not to (?:continue|proceed|move|advance|progress)|at this (?:stage|time|point)[,.]|best of luck|wish(?:ing)? you (?:all )?the best|future (?:opportunities|openings|roles)|better fit|keep (?:an eye on|you(?:r CV| in mind))|after careful (?:review|consideration)|encourage you to (?:apply|check back)|(?:keep|retain) your (?:cv|resume|details|information) on file|לא להמשיך|בשלב זה|בהצלחה (?:בהמשך|בחיפוש)|הזדמנויות עתידיות|נשמור את (?:קורות|פרטי))/i;
 
 // Strong, present-tense invitation language → don't shortcut; let the AI decide.
 const INVITATION_RE =
@@ -42,15 +42,20 @@ const INTERVIEW_SIGNAL_RE =
 // settle (an unusual rejection, a status update) — worth an AI call, never noise.
 // "מועמדותך לתפקיד Product Manager" was dropped here before this existed.
 const APPLICATION_STATUS_RE =
-  /(your (?:application|candidacy|candidature)|application (?:update|status)|update (?:on|regarding) your|thank you for (?:your )?(?:interest|considering)|מועמדות(?:ך|כם)|עדכון (?:לגבי|בנוגע ל|בעניין )?(?:ה)?מועמדות|קורות החיים ששלחת)/i;
+  /(your (?:application|candidacy|candidature)|application (?:update|status)|update (?:on|regarding) your|thank you for (?:your )?(?:interest|considering)|מועמדות(?:ך|כם)|הגשת מועמדות|קורות החיים שלך|עדכון (?:לגבי|בנוגע ל|בעניין )?(?:ה)?מועמדות|קורות החיים ששלחת)/i;
 
 /**
  * Should an email the rules couldn't classify be sent to the AI? Only if it
  * shows interview/recruiter signal — otherwise it's broad-query noise
  * (newsletters etc.) and we skip it for free to protect the daily AI budget.
  */
+/** Subject + body with typographic apostrophes straightened: templates write
+ *  "won’t" / "we’ve", and every rule spells them with a plain "'". Without this
+ *  Playtika's and Cloudinary's rejections slipped through as noise. */
+const textOf = (msg: FetchedMessage) => `${msg.subject}\n${msg.body}`.replace(/[’‘ʼ`´]/g, "'");
+
 export function looksLikeInvitation(msg: FetchedMessage): boolean {
-  const text = `${msg.subject}\n${msg.body}`;
+  const text = textOf(msg);
   return (
     INVITATION_RE.test(text) ||
     INTERVIEW_SIGNAL_RE.test(text) ||
@@ -58,11 +63,24 @@ export function looksLikeInvitation(msg: FetchedMessage): boolean {
   );
 }
 
+/**
+ * Stricter gate for walking HISTORY (rescan): only mail that is plainly about
+ * the candidate's own application or a concrete invitation earns an AI call.
+ * The live gate also admits weak words ("offer", "schedule") — fine for an
+ * hourly trickle, but over months of history it sends every store promo and
+ * newsletter to a model with a ~20/day free quota.
+ */
+export function looksLikeApplicationMail(msg: FetchedMessage): boolean {
+  const text = textOf(msg);
+  return INVITATION_RE.test(text) || APPLICATION_STATUS_RE.test(text) || ACK_RE.test(text);
+}
+
 const GENERIC_SENDER_RE =
   /^(no.?reply|do.?not.?reply|careers?|recruit(?:ing|ment)?|jobs?|talent|hiring|notifications?|hr|hello|info|support|team|mailer|mail|admin|apply|application|greenhouse|lever|workday|comeet|workable)\b/i;
 
 function cleanCompany(name: string): string {
   return name
+    .replace(/^(?:צוות|קבוצת|מחלקת)\s+(?:ה)?גיוס\s+(?:של\s+)?/, "") // "קבוצת גיוס הפניקס"
     .replace(/\s*[|\-–—:]\s*(careers?|recruit(?:ing|ment)?|talent|hr|jobs?|hiring|team).*$/i, "")
     .replace(/(?:\s+(?:careers?|recruit(?:ing|ment)?|talent(?: acquisition)?|hr|jobs?|hiring|team))+$/i, "")
     .trim();
@@ -91,7 +109,7 @@ function companyFromCapture(capture: string): string {
       words.push(w);
     }
     while (words.length && NAME_CONNECTORS.has(words[words.length - 1].toLowerCase())) words.pop();
-    const c = cleanCompany(words.join(" ")).replace(/[^\w)']+$/g, "").trim();
+    const c = cleanCompany(words.join(" ")).replace(/[^\p{L}\p{N})']+$/gu, "").trim();
     if (c.length >= 2 && !ROLE_LIKE_RE.test(c) && !NOT_A_COMPANY.has(c.toLowerCase())) return c;
   }
   return "";
@@ -99,13 +117,14 @@ function companyFromCapture(capture: string): string {
 
 const NAME = String.raw`([A-Za-z0-9][\w .&'\-–|]{1,60})`;
 const SUBJECT_COMPANY_RES = [
-  new RegExp(String.raw`(?:applying|application|applied) (?:to|with|at|in|for a position at)\s+${NAME}`, "i"),
-  // "Product Manager with SciPlay" — only after a role word, so "Interview
-  // with Jane Doe" never reads as a company.
+  // "…Manager - AI Billing position at monday.com", "Product Manager with
+  // SciPlay" — the company right after a role word wins; anchoring on the role
+  // also keeps "Interview with Jane Doe" from reading as a company.
   new RegExp(
     String.raw`\b(?:position|role|opening|manager|engineer|developer|designer|analyst|lead|director|specialist|owner|architect|scientist|intern)s? (?:at|with)\s+${NAME}`,
     "i",
   ),
+  new RegExp(String.raw`(?:applying|application|applied) (?:to|with|at|in|for a position at)\s+${NAME}`, "i"),
   new RegExp(String.raw`interest in (?:joining )?(?:the team at )?${NAME}`, "i"),
   new RegExp(String.raw`(?:considering|joining)\s+${NAME}`, "i"),
   new RegExp(String.raw`\b[Ff]rom\s+([A-Z][\w .&'\-–|]{1,60})`),
@@ -113,6 +132,9 @@ const SUBJECT_COMPANY_RES = [
   new RegExp(String.raw`\bat\s+([A-Z][\w .&'\-–|]{1,60})`),
   // "Similarweb (Job Application Update)", "Act Security Application Update"
   new RegExp(String.raw`^([A-Z][\w.&'\-]*(?: [A-Z][\w.&'\-]*){0,3})\s*(?:\(\s*)?(?:[Jj]ob )?[Aa]pplication\b`),
+  // Hebrew: "מועמדותך בקבוצת הראל", "תודה על הגשת מועמדותך - אלביט מערכות"
+  /(?:בקבוצת|לקבוצת|בחברת|לחברת)\s+([\u0590-\u05FF][\u0590-\u05FF"'.\s]{1,30})/,
+  /מועמד\S*.*?\s[-–]\s*([\u0590-\u05FF][\u0590-\u05FF"'.\s]{1,30})$/,
 ];
 
 function subjectCompany(subject: string): string {
@@ -153,7 +175,7 @@ export function extractCompany(msg: FetchedMessage): string {
   const behalf = (msg.body || "").match(/on behalf of\s+([A-Z][\w .&'\-]{1,40})/i);
   if (behalf) {
     // Cut at the sentence boundary (". " keeps "Monday.com"-style names intact).
-    const c = cleanCompany(behalf[1].split(/\.\s|[,;\n]/)[0]).replace(/[^\w)']+$/g, "").trim();
+    const c = cleanCompany(behalf[1].split(/\.\s|[,;\n]/)[0]).replace(/[^\p{L}\p{N})']+$/gu, "").trim();
     if (c) return c;
   }
 
@@ -190,7 +212,7 @@ function extractRole(subject: string): string {
     /(?:\s+|(?<=[a-z]))(?:at|@|with|position|role|opening|opportunity|req|requisition)\b/i,
   )[0];
   role = role
-    .replace(/[^\w)']+$/g, "") // trailing punctuation/emoji
+    .replace(/[^\p{L}\p{N})']+$/gu, "") // trailing punctuation/emoji
     .replace(/\s+/g, " ")
     .trim();
   // "Thank You for Applying to Ubeya" → capture "Applying to Ubeya" is not a role.
@@ -200,7 +222,7 @@ function extractRole(subject: string): string {
 
 /** Confident ack/rejection → Analysis; otherwise null (route to AI). */
 export function classifyHeuristically(msg: FetchedMessage): Analysis | null {
-  const text = `${msg.subject}\n${msg.body}`;
+  const text = textOf(msg);
 
   const base = {
     is_relevant: true as const,

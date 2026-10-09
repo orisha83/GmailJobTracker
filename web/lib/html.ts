@@ -20,7 +20,8 @@ const NAMED_ENTITIES: Record<string, string> = {
   zwj: "",
 };
 
-export const looksLikeHtml = (s: string) => /<(?:!doctype|html|body|div|p|table|span|br)\b/i.test(s);
+export const looksLikeHtml = (s: string) =>
+  /<(?:!doctype|html|head|body|style|meta|div|p|table|tr|td|span|br|h[1-6]|a|img)\b/i.test(s);
 
 /**
  * Readable text from an HTML email: drops <head>/<style>/<script> and comments,
@@ -33,6 +34,7 @@ export function htmlToText(html: string): string {
   return html
     .replace(/<!--[\s\S]*?-->/g, " ")
     .replace(/<(head|style|script|title)\b[\s\S]*?<\/\1\s*>/gi, " ")
+    .replace(/<(?:style|script)\b[\s\S]*$/i, " ") // unclosed (truncated) block
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/(?:p|div|tr|li|h[1-6]|table|blockquote)\s*>/gi, "\n")
     .replace(/<[^>]*>/g, " ")

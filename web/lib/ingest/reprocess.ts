@@ -61,6 +61,10 @@ export interface ReprocessReport {
   nextRow?: number;
 }
 
+// Raw bodies were cached up to 4000 chars; one at (nearly) that length was cut.
+const TRUNCATED_AT = 3990;
+const GMAIL_GAP_MS = 250;
+
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -88,10 +92,13 @@ async function resolveRaw(
   rawByMessageId: Map<string, RawEmail>,
   recovered: RawEmail[],
 ): Promise<RawEmail | null> {
-  // A cached HTML body truncated before any message text (CSS-heavy
-  // templates) is useless — re-fetch it from Gmail as text instead.
+  // Older ingests cached HTML cut at RAW_BODY_MAX — often mid-markup, before
+  // the message text (HiBob: 4k of CSS, rejection text never cached).
+  // Classifying that fragment could flip a real rejection back to "Applied",
+  // so a truncated HTML body is re-fetched from Gmail (and re-cached as text).
   const usable = (raw: RawEmail) =>
-    !looksLikeHtml(raw.body) || toPlainText(raw.body).length >= 80;
+    !looksLikeHtml(raw.body) ||
+    (raw.body.length < TRUNCATED_AT && toPlainText(raw.body).length >= 80);
   if (row.messageId && rawByMessageId.has(row.messageId)) {
     const raw = rawByMessageId.get(row.messageId)!;
     if (usable(raw)) return raw;
@@ -103,6 +110,7 @@ async function resolveRaw(
 
   // Not cached (ingested before the Raw tab existed) — recover from Gmail.
   try {
+    await sleep(GMAIL_GAP_MS); // stay inside Gmail's per-minute query budget
     let messageId = row.messageId;
     if (!messageId && row.threadId) {
       const ids = await listThreadMessageIds(auth, row.threadId);
@@ -156,7 +164,9 @@ function companyFix(
 }
 
 export async function runReprocess(
-  opts: { dryRun?: boolean; limit?: number; startRow?: number } = {},
+  // rulesOnly: never call the AI — apply rule corrections and company
+  // re-filing only; rows the rules can't settle are left as they are.
+  opts: { dryRun?: boolean; limit?: number; startRow?: number; rulesOnly?: boolean } = {},
   analyzer: EmailAnalyzer = getAnalyzer(),
 ): Promise<ReprocessReport> {
   const dryRun = opts.dryRun ?? true;
@@ -199,7 +209,7 @@ export async function runReprocess(
     if (!analysis) {
       // No rule match. If there's no interview signal either, leave the row as
       // classified originally — reprocess corrects, it never degrades.
-      if (!looksLikeInvitation(message)) {
+      if (!looksLikeInvitation(message) || opts.rulesOnly) {
         report.rowsExamined++;
         continue;
       }
@@ -255,6 +265,7 @@ export async function runReprocess(
     // regexes don't.
     if (
       source === "rule" &&
+      row.source !== "rule" && // a rule may correct its OWN earlier misread
       analysis.category === "Applied" &&
       row.category !== "Applied" &&
       row.category !== "Other" &&

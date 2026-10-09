@@ -26,7 +26,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  let body: { dryRun?: boolean; limit?: number; startRow?: number } = {};
+  let body: { dryRun?: boolean; limit?: number; startRow?: number; rulesOnly?: boolean } = {};
   try {
     body = await request.json();
   } catch {
@@ -38,6 +38,7 @@ export async function POST(request: NextRequest) {
       dryRun: body.dryRun ?? true,
       limit: body.limit,
       startRow: body.startRow,
+      rulesOnly: body.rulesOnly ?? false,
     });
     return NextResponse.json({ ok: true, ...report });
   } catch (err) {

@@ -1,6 +1,11 @@
 import { describe, it, expect } from "vitest";
 import type { FetchedMessage } from "@/lib/google/gmail";
-import { classifyHeuristically, extractCompany, looksLikeInvitation } from "./heuristics";
+import {
+  classifyHeuristically,
+  extractCompany,
+  looksLikeApplicationMail,
+  looksLikeInvitation,
+} from "./heuristics";
 
 /** Minimal FetchedMessage builder — override only what a test cares about. */
 function msg(partial: Partial<FetchedMessage>): FetchedMessage {
@@ -318,4 +323,65 @@ it("a two-word company sender on an abbreviated domain is not a person (Discount
   expect(
     extractCompany(msg({ subject: "עדכון", senderName: "Discount Bank", senderDomain: "dbank.co.il" })),
   ).toBe("Discount Bank");
+});
+
+describe("rejections lost before (curly apostrophes, closed roles, Hebrew)", () => {
+  it.each([
+    ["Update on Your Application to Playtika", "After thoughtful consideration, we won’t be continuing the recruitment process with you."],
+    ["Following your application", "We wanted to let you know that the role has been closed, and we won’t be moving forward with the process."],
+    ["Your application to ActualSignal", "At this time, we’ve completed the process and have filled the position."],
+    ["Thank you for your interest in Axonius", "We wanted to inform you that the position is now closed and we are no longer reviewing applications."],
+    ["הגשת מועמדותך לקבוצת הפניקס", "צוות הגיוס בדק את מועמדותך אך בשלב זה לא נמצאה התאמה למשרה."],
+  ])("%s → Rejection", (subject, body) => {
+    expect(classifyHeuristically(msg({ subject, body }))?.category).toBe("Rejection");
+  });
+
+  it("'received successfully' (נקלטו בהצלחה) is a plain ack, not a rejection cue", () => {
+    const a = classifyHeuristically(
+      msg({ subject: "תודה על הגשת מועמדות!", body: "קורות החיים שלך נקלטו בהצלחה במערכת שלנו." }),
+    );
+    expect(a?.category).toBe("Applied");
+  });
+
+  it("an ack with curly apostrophes still shortcuts as Applied", () => {
+    const a = classifyHeuristically(msg({ subject: "Thanks", body: "Thank you for applying — we’ve received your application." }));
+    expect(a?.category).toBe("Applied");
+  });
+});
+
+describe("rescan follow-ups", () => {
+  it("'If you are not selected…' in an ack is not a rejection (Valence)", () => {
+    const a = classifyHeuristically(
+      msg({
+        subject: "Here we go! Your application to Valence has just been received",
+        body: "We have received your application. If you are not selected for this position, please check our page later.",
+      }),
+    );
+    expect(a?.category).toBe("Applied");
+  });
+
+  it("'…position at monday.com' beats a role tail (AI Billing Infrastructure)", () => {
+    expect(
+      extractCompany(
+        msg({
+          subject: "Thanks for Applying to the Senior Product Manager - AI Billing Infrastructure position at monday.com",
+          senderName: "monday.com",
+          senderDomain: "careers.monday.com",
+        }),
+      ),
+    ).toBe("monday.com");
+  });
+
+  it.each([
+    ["מועמדותך בקבוצת הראל ביטוח ופיננסים", "danielatz@harel-ins.co.il", "harel-ins.co.il", "הראל ביטוח ופיננסים"],
+    ["תודה על הגשת מועמדותך - אלביט מערכות", "donotreply@hunterhrms.com", "hunterhrms.com", "אלביט מערכות"],
+    ["Hello", "קבוצת גיוס הפניקס", "hunterhrms.com", "הפניקס"],
+  ])("Hebrew company: %s → %s", (subject, senderName, senderDomain, company) => {
+    expect(extractCompany(msg({ subject, senderName, senderDomain }))).toBe(company);
+  });
+
+  it("history gate ignores promos that only say 'offer'", () => {
+    expect(looksLikeApplicationMail(msg({ subject: "These special offers end soon", body: "Shop the offer" }))).toBe(false);
+    expect(looksLikeApplicationMail(msg({ subject: "Your Candidacy for Job Opps at Discount Bank", body: "" }))).toBe(true);
+  });
 });

@@ -30,3 +30,8 @@ describe("toPlainText", () => {
     expect(toPlainText("<p>Hi</p>")).toBe("Hi");
   });
 });
+
+it("drops an unclosed (truncated) style block and recognises h2/a-only HTML", () => {
+  expect(looksLikeHtml("Thanks <h2 style='x'>Hi</h2>")).toBe(true);
+  expect(htmlToText("<p>Hello</p><style>.a{color:red}")).toBe("Hello");
+});
