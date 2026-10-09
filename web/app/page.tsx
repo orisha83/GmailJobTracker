@@ -1,22 +1,34 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import {
+  AUTO_STATUS,
+  HIDDEN_STATUS,
   OVERRIDE_STATUSES,
   buildPositions,
+  isHidden,
   isRealRole,
   isTerminal,
   norm,
   sortPositions,
   wallClockParts,
   DISPLAY_TZ,
+  type Alias,
   type Job,
   type Position,
   type SortKey,
 } from "@/lib/positions";
+import {
+  EmailList,
+  EmailsToggle,
+  HiddenList,
+  MergeSelect,
+  MergedChips,
+  type CompanyOption,
+} from "./ManageControls";
 
-type Filter = "Active" | "Needs attention" | "Rejected" | "All";
-const FILTERS: Filter[] = ["Active", "Needs attention", "Rejected", "All"];
+type Filter = "Active" | "Needs attention" | "Rejected" | "All" | "Hidden";
+const FILTERS: Filter[] = ["Active", "Needs attention", "Rejected", "All", "Hidden"];
 
 const CATEGORY_STYLES: Record<string, string> = {
   Invitation: "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200",
@@ -84,6 +96,10 @@ const SORTS: { key: SortKey; label: string }[] = [
 
 export default function Dashboard() {
   const [jobs, setJobs] = useState<Job[] | null>(null);
+  const [aliases, setAliases] = useState<Alias[]>([]);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [savingRow, setSavingRow] = useState<number | null>(null);
+  const [merging, setMerging] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("Active");
@@ -99,6 +115,7 @@ export default function Dashboard() {
       const data = await res.json();
       if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
       setJobs(data.jobs as Job[]);
+      setAliases((data.aliases ?? []) as Alias[]);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setJobs([]);
@@ -114,7 +131,16 @@ export default function Dashboard() {
     void load();
   }, [load]);
 
-  const positions = useMemo(() => buildPositions(jobs ?? []), [jobs]);
+  const positions = useMemo(() => buildPositions(jobs ?? [], aliases), [jobs, aliases]);
+  const hiddenJobs = useMemo(() => (jobs ?? []).filter(isHidden), [jobs]);
+  // One entry per company card group — targets for "Merge into…" / "Move to…".
+  const companies = useMemo<CompanyOption[]>(() => {
+    const m = new Map<string, string>();
+    for (const p of positions) if (!m.has(p.groupKey)) m.set(p.groupKey, p.company);
+    return [...m]
+      .map(([key, name]) => ({ key, name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [positions]);
   const matches = useCallback(
     (p: Position): boolean => {
       switch (filter) {
@@ -124,6 +150,8 @@ export default function Dashboard() {
           return p.stale || norm(p.category) === "invitation";
         case "Rejected":
           return norm(p.category) === "rejection" || norm(p.status) === "rejected";
+        case "Hidden":
+          return false; // the Hidden view lists emails, not positions
         default:
           return true;
       }
@@ -137,6 +165,7 @@ export default function Dashboard() {
       (p) => norm(p.category) === "rejection" || norm(p.status) === "rejected",
     ).length,
     All: positions.length,
+    Hidden: hiddenJobs.length,
   };
   const q = norm(query);
   const visible = sortPositions(
@@ -144,6 +173,109 @@ export default function Dashboard() {
       .filter(matches)
       .filter((p) => !q || norm(p.company).includes(q) || norm(p.role).includes(q)),
     sortBy,
+  );
+
+  /** POST/PATCH/DELETE helper: throws with the server's error message. */
+  async function send(url: string, method: string, body: unknown) {
+    const res = await fetch(url, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
+  }
+
+  async function mergeInto(p: Position, target: CompanyOption) {
+    const from = p.memberKeys.filter((m) => m.key !== target.key);
+    if (from.length === 0) return;
+    setMerging(true);
+    const before = aliases;
+    // Optimistic: fold the card now; the server's list replaces it on success.
+    setAliases([
+      ...aliases.filter((a) => !from.some((f) => f.key === a.fromKey)),
+      ...from.map((f) => ({ fromKey: f.key, toKey: target.key, fromName: f.name || p.company })),
+    ]);
+    try {
+      const data = await send("/api/aliases", "POST", {
+        toKey: target.key,
+        from: from.map((f) => ({ key: f.key, name: f.name || p.company })),
+      });
+      setAliases(data.aliases as Alias[]);
+    } catch (e) {
+      setAliases(before);
+      setError(`Merge failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setMerging(false);
+    }
+  }
+
+  async function unmerge(fromKey: string) {
+    setMerging(true);
+    const before = aliases;
+    setAliases(aliases.filter((a) => a.fromKey !== fromKey));
+    try {
+      const data = await send("/api/aliases", "DELETE", { fromKey });
+      setAliases(data.aliases as Alias[]);
+    } catch (e) {
+      setAliases(before);
+      setError(`Undo merge failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setMerging(false);
+    }
+  }
+
+  /** Per-email edit (hide / unhide / move), addressed by Sheet row. */
+  async function editRow(j: Job, edit: { status?: string; company?: string }) {
+    if (j.rowNumber == null) return;
+    setSavingRow(j.rowNumber);
+    setJobs((cur) =>
+      cur
+        ? cur.map((x) =>
+            x.rowNumber === j.rowNumber
+              ? {
+                  ...x,
+                  ...(edit.status !== undefined && {
+                    status: edit.status === AUTO_STATUS ? x.step : edit.status,
+                  }),
+                  ...(edit.company !== undefined && { company: edit.company, companyKey: "" }),
+                }
+              : x,
+          )
+        : cur,
+    );
+    try {
+      await send(`/api/rows/${j.rowNumber}`, "PATCH", {
+        threadId: j.threadId,
+        received: j.received,
+        ...edit,
+      });
+    } catch (e) {
+      setError(`Update failed: ${e instanceof Error ? e.message : String(e)} — reloading.`);
+      await load();
+    } finally {
+      setSavingRow(null);
+    }
+  }
+
+  const toggleEmails = (key: string) =>
+    setExpanded((cur) => {
+      const next = new Set(cur);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+
+  const emailList = (p: Position) => (
+    <EmailList
+      jobs={p.jobs}
+      companies={companies}
+      currentKey={p.groupKey}
+      savingRow={savingRow}
+      onMove={(j, company) => editRow(j, { company })}
+      onHide={(j) => editRow(j, { status: HIDDEN_STATUS })}
+    />
   );
 
   async function changeStatus(p: Position, status: string) {
@@ -158,7 +290,7 @@ export default function Dashboard() {
       cur
         ? cur.map((j) =>
             (p.latestMessageId ? j.messageId === p.latestMessageId : j.threadId === p.latestThreadId)
-              ? { ...j, status }
+              ? { ...j, status: status === AUTO_STATUS ? j.step : status }
               : j,
           )
         : cur,
@@ -206,7 +338,7 @@ export default function Dashboard() {
 
       {jobs !== null && positions.length > 0 && (
         <div className="mb-4 flex flex-wrap gap-1 rounded-lg border border-slate-200 bg-white p-1 text-sm shadow-sm">
-          {FILTERS.map((f) => (
+          {FILTERS.filter((f) => f !== "Hidden" || counts.Hidden > 0 || filter === "Hidden").map((f) => (
             <button
               key={f}
               onClick={() => setFilter(f)}
@@ -270,7 +402,15 @@ export default function Dashboard() {
         </div>
       )}
 
-      {jobs !== null && positions.length > 0 && visible.length === 0 && !error && (
+      {jobs !== null && filter === "Hidden" && (
+        <HiddenList
+          jobs={hiddenJobs}
+          savingRow={savingRow}
+          onUnhide={(j) => editRow(j, { status: AUTO_STATUS })}
+        />
+      )}
+
+      {jobs !== null && filter !== "Hidden" && positions.length > 0 && visible.length === 0 && !error && (
         <div className="rounded-xl border border-dashed border-slate-300 bg-white p-10 text-center text-slate-500">
           {q ? (
             <>No matches for “{query}” in “{filter}”.</>
@@ -280,7 +420,7 @@ export default function Dashboard() {
         </div>
       )}
 
-      {jobs !== null && visible.length > 0 && (
+      {jobs !== null && filter !== "Hidden" && visible.length > 0 && (
         <>
           {/* Desktop table */}
           <div className="hidden overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm sm:block">
@@ -296,7 +436,8 @@ export default function Dashboard() {
               </thead>
               <tbody className="divide-y divide-slate-100 text-slate-800">
                 {visible.map((p) => (
-                  <tr key={p.key} className="align-top">
+                  <Fragment key={p.key}>
+                  <tr className="align-top">
                     <td className="px-4 py-3">
                       <div className="flex items-start gap-2">
                         <CompanyLogo position={p} />
@@ -304,9 +445,14 @@ export default function Dashboard() {
                           <CompanyName position={p} />
                           <div className="text-slate-500">{p.role}</div>
                           {p.stale && <StaleBadge />}
-                          {p.rounds > 1 && (
-                            <div className="mt-1 text-xs text-slate-400">{p.rounds} emails</div>
-                          )}
+                          <MergedChips aliases={p.mergedFrom} disabled={merging} onUnmerge={unmerge} />
+                          <div className="mt-1 -ml-2">
+                            <EmailsToggle
+                              count={p.rounds}
+                              open={expanded.has(p.key)}
+                              onToggle={() => toggleEmails(p.key)}
+                            />
+                          </div>
                         </div>
                       </div>
                     </td>
@@ -321,13 +467,29 @@ export default function Dashboard() {
                       {fmtDay(p.lastUpdate)}
                     </td>
                     <td className="px-4 py-3">
-                      <OverrideSelect
-                        position={p}
-                        saving={savingKey === p.key}
-                        onChange={changeStatus}
-                      />
+                      <div className="flex flex-col items-start gap-1.5">
+                        <OverrideSelect
+                          position={p}
+                          saving={savingKey === p.key}
+                          onChange={changeStatus}
+                        />
+                        <MergeSelect
+                          position={p}
+                          companies={companies}
+                          disabled={merging}
+                          onMerge={mergeInto}
+                        />
+                      </div>
                     </td>
                   </tr>
+                  {expanded.has(p.key) && (
+                    <tr>
+                      <td colSpan={5} className="bg-slate-50/40 px-4 pb-4 pt-0">
+                        {emailList(p)}
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
                 ))}
               </tbody>
             </table>
@@ -348,6 +510,7 @@ export default function Dashboard() {
                   <StatusBadge status={p.status} category={p.category} />
                 </div>
                 {p.stale && <div className="mt-2"><StaleBadge /></div>}
+                <MergedChips aliases={p.mergedFrom} disabled={merging} onUnmerge={unmerge} />
                 <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-600">
                   {p.nextInterview && (
                     <span className="text-violet-700">
@@ -369,15 +532,28 @@ export default function Dashboard() {
                     </span>
                   )}
                   <span className="text-slate-400">Updated {fmtDay(p.lastUpdate)}</span>
-                  {p.rounds > 1 && <span className="text-slate-400">{p.rounds} emails</span>}
                 </div>
-                <div className="mt-3">
+                <div className="mt-3 grid grid-cols-2 gap-2">
                   <OverrideSelect
                     position={p}
                     saving={savingKey === p.key}
                     onChange={changeStatus}
                   />
+                  <MergeSelect
+                    position={p}
+                    companies={companies}
+                    disabled={merging}
+                    onMerge={mergeInto}
+                  />
                 </div>
+                <div className="mt-2 -ml-2">
+                  <EmailsToggle
+                    count={p.rounds}
+                    open={expanded.has(p.key)}
+                    onToggle={() => toggleEmails(p.key)}
+                  />
+                </div>
+                {expanded.has(p.key) && <div className="mt-2">{emailList(p)}</div>}
               </div>
             ))}
           </div>
@@ -521,6 +697,9 @@ function OverrideSelect({
       className="w-full rounded-md border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 disabled:opacity-50 sm:w-auto sm:py-1 sm:text-xs"
     >
       <option value="">Set status…</option>
+      {position.statusSource === "manual" && (
+        <option value={AUTO_STATUS}>↺ Auto (from emails)</option>
+      )}
       {OVERRIDE_STATUSES.map((s) => (
         <option key={s} value={s}>
           {s}

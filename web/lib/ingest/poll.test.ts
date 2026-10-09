@@ -15,6 +15,7 @@ vi.mock("@/lib/google/sheets", () => ({
   getLastChecked: vi.fn(),
   getProcessedIds: vi.fn(),
   markProcessedBatch: vi.fn(),
+  readRows: vi.fn(async () => []),
   appendRows: vi.fn(),
   appendRawEmails: vi.fn(),
   setLastChecked: vi.fn(),
@@ -29,6 +30,7 @@ import {
   getLastChecked,
   getProcessedIds,
   markProcessedBatch,
+  readRows,
   setLastChecked,
 } from "@/lib/google/sheets";
 import { notifyDigest } from "@/lib/notify";
@@ -409,5 +411,27 @@ describe("runPoll — full routing in one pass", () => {
       { messageId: "i", threadId: "t-i" },
       { messageId: "n", threadId: "t-n" },
     ]);
+  });
+});
+
+describe("runPoll — known-company snapping", () => {
+  it("files a recruiter-signed rejection under the company already tracked", async () => {
+    vi.mocked(getLastChecked).mockResolvedValue(WATERMARK);
+    vi.mocked(getProcessedIds).mockResolvedValue({ messageIds: new Set(), legacyThreadIds: new Set() });
+    vi.mocked(readRows).mockResolvedValue([
+      { company: "Gong", companyKey: "gong" } as Awaited<ReturnType<typeof readRows>>[number],
+    ]);
+    feed([
+      fm({
+        id: "r1",
+        subject: "Thank you for considering Gong, Ori",
+        body: "Unfortunately, we won't be moving forward.",
+        senderName: "Tamar Dekel Romano",
+        senderDomain: "gong.io",
+      }),
+    ]);
+    await runPoll({ analyze: vi.fn() });
+    const rows = vi.mocked(appendRows).mock.calls[0][1];
+    expect(rows[0]).toMatchObject({ company: "Gong", companyKey: "gong", category: "Rejection" });
   });
 });

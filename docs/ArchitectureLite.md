@@ -20,12 +20,16 @@ Based on [PRD.md](PRD.md) and [StackDecision.md](StackDecision.md). Single-user 
     /admin
       /backfill          POST → one-time repair: analyze never-seen messages (CRON_SECRET)
       /reprocess         POST → re-classify cached emails, diff-first (CRON_SECRET)
-    /jobs                GET  → read tracked rows from Sheet (dashboard data)
-    /jobs/[messageId]    PATCH→ update pipeline status in Sheet
+    /jobs                GET  → read tracked rows + manual merges (dashboard data)
+    /jobs/[messageId]    PATCH→ update pipeline status in Sheet ("Auto" clears an override)
+    /rows/[row]          PATCH→ per-email edit: hide/unhide, move to another company
+    /aliases             GET/POST/DELETE → manual company merges (merge / undo)
   /(dashboard)
     page.tsx             dashboard UI (table, states, status editor)
 /lib
-  positions.ts           pure position derivation (grouping, stage-aware status)
+  positions.ts           pure position derivation (grouping, aliases, stage-aware status)
+  company.ts             company identity: canonical keys, ATS-aware domains, known-company snapping
+  html.ts                HTML email → text (bodies are classified as text, never markup)
   google/
     auth.ts              OAuth client factory, token load/refresh
     gmail.ts             search messages, fetch message, list thread messages
@@ -65,7 +69,9 @@ Based on [PRD.md](PRD.md) and [StackDecision.md](StackDecision.md). Single-user 
         else noise gate (looksLikeInvitation) → skip + mark for free
         else analyzer.analyze(...)                 // Gemini, budget + throttle
              → guardOfferDowngrade(...)            // "offer you an interview" ≠ Offer
-        if is_relevant: queue Tracker row (+ digest alert for Invitation/Offer)
+        if is_relevant: snapToKnown(company) → attach to an already-tracked company
+                        when the name/subject/sender domain points there
+                        queue Tracker row (+ digest alert for Invitation/Offer)
         queue Raw cache entry (subject/body — enables offline re-classification)
         queue processed {messageId, threadId}
   → flush: appendRows → appendRawEmails → markProcessedBatch → notifyDigest
@@ -75,7 +81,9 @@ Based on [PRD.md](PRD.md) and [StackDecision.md](StackDecision.md). Single-user 
 **Dashboard read:**
 ```
 /(dashboard) → fetch /api/jobs → sheets.readRows() → lib/positions.buildPositions()
-  → group rows by company (segments split at rejections)
+  → drop Hidden rows; key each row by groupKeyFor(company) (suffix-stripped:
+    "Armis Security" ≡ "Armis"); apply manual aliases; fuzzy-merge spelling
+    variants; group by company (segments split at rejections)
   → derivePositionState(): terminal → manual-on-latest → Offer → latest
     Invitation step → "Interview scheduled" → Applied   (stage-aware; an ack
     can never downgrade an interview — see PRD §8 derivation table)
@@ -96,6 +104,9 @@ scripts/backfill.mjs   → analyze messages the per-thread era never saw,
 scripts/reprocess.mjs  → re-run current classifier over Raw, print diff,
                          --apply writes Step/Category/InterviewDateTime
                          (Status only where the user never edited it)
+                         + Company/CompanyKey on rule rows that belong to an
+                         already-tracked company (recruiter-name / ATS-domain
+                         misfiles); AI and manual rows keep their company
 ```
 
 ## 3. Google Sheet layout (source of truth)
@@ -107,6 +118,10 @@ Hidden tab "Processed" (A:C): `messageId | threadId | processedAt`. Dedup is per
 Hidden tab "Raw" (A:H): `MessageID | ThreadID | Received | SenderName | SenderDomain | Subject | Body (4k) | LinksJSON` — offline copy of everything classified, so reprocessing never re-reads Gmail.
 
 Hidden tab "Meta": scan watermark (B1) + notification state (B2:B3).
+
+Hidden tab "Aliases" (A:D): `fromKey | toKey | fromName | mergedAt` — manual company merges from the dashboard. Applied at grouping time (never rewrites rows), so a merge also catches future mail for that company and is undone by deleting the alias.
+
+Per-email manual edits write the row itself: Status `Hidden` drops the email from every card (listed under the dashboard's "Hidden" filter for undo); a move writes Company/CompanyKey and sets Source to `manual`, which reprocess never overrides.
 
 ## 4. The `EmailAnalyzer` interface (swap point)
 ```ts
@@ -139,9 +154,11 @@ Default implementation: `GeminiAnalyzer` (gemini-2.5-flash-lite, free tier, `res
 | `/api/admin/reprocess` | POST | Re-classify cached emails (dry-run default) | `CRON_SECRET` header |
 | `/api/jobs` | GET | List tracked rows | session/local |
 | `/api/jobs/[messageId]` | PATCH | Update status (messageId, legacy threadId ok) | session/local |
+| `/api/rows/[row]` | PATCH | Hide/unhide or move one email (guarded by threadId + received) | session/local |
+| `/api/aliases` | GET/POST/DELETE | List / add / undo manual company merges | session/local |
 
 ## 6. Secrets / config (env)
-`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`, `SHEET_ID`, `GEMINI_API_KEY`, `CRON_SECRET`, `SEARCH_QUERY` (default bilingual), `TIMEZONE` (Asia/Jerusalem), `NOTIFY_EMAIL`, `SHEET_RAW_TAB` (default "Raw").
+`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`, `SHEET_ID`, `GEMINI_API_KEY`, `CRON_SECRET`, `SEARCH_QUERY` (default bilingual), `TIMEZONE` (Asia/Jerusalem), `NOTIFY_EMAIL`, `SHEET_RAW_TAB` (default "Raw"), `SHEET_ALIASES_TAB` (default "Aliases").
 
 ## 7. Key risks (carried from PRD/Stack)
 - Restricted Gmail scope → unverified app + test user.

@@ -25,6 +25,11 @@ External cron ──Bearer CRON_SECRET──▶ /api/cron/poll ──▶ Gmail (
   mail for $0 first); switch to Anthropic **Claude** with one env var.
 - **Stage-aware status** — each position's status is derived from all of its emails: an
   "under review" ack can't hide a scheduled interview, and "Offer" means a real job offer.
+- **One card per company** — an application, its interviews and its rejection stay
+  together even when a recruiter signs with their own name or an ATS (Greenhouse,
+  Comeet, Workday, Ashby) relays the mail; "Armis" and "Armis Security" are one company.
+- **Manual control** — merge duplicate cards (sticky for future mail, undoable), expand
+  a card to see its emails, move one to another company, hide junk, open it in Gmail.
 - **Repairable** — raw emails are cached in a hidden tab; `scripts/reprocess.mjs` re-runs
   the classifier offline and shows a diff before writing anything (manual edits are safe).
 - **Your data, your account** — everything lives in your own Gmail + Google Sheet.

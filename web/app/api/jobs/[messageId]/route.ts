@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { makeAuthedClient } from "@/lib/google/auth";
-import { PIPELINE_STATUSES, updateStatus, type PipelineStatus } from "@/lib/google/sheets";
+import { PIPELINE_STATUSES, updateStatus } from "@/lib/google/sheets";
+import { AUTO_STATUS } from "@/lib/positions";
+
+// Manual overrides, plus "Auto" to clear one (status returns to the email's step).
+const ALLOWED: readonly string[] = [...PIPELINE_STATUSES, AUTO_STATUS];
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -20,16 +24,16 @@ export async function PATCH(
   }
 
   const status = body.status;
-  if (!status || !PIPELINE_STATUSES.includes(status as PipelineStatus)) {
+  if (!status || !ALLOWED.includes(status)) {
     return NextResponse.json(
-      { ok: false, error: `status must be one of: ${PIPELINE_STATUSES.join(", ")}` },
+      { ok: false, error: `status must be one of: ${ALLOWED.join(", ")}` },
       { status: 400 },
     );
   }
 
   try {
     const auth = makeAuthedClient();
-    const updated = await updateStatus(auth, messageId, status as PipelineStatus);
+    const updated = await updateStatus(auth, messageId, status);
     if (!updated) {
       return NextResponse.json(
         { ok: false, error: "No row found for that message ID" },

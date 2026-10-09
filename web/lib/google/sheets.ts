@@ -10,6 +10,8 @@
 import { google, type sheets_v4 } from "googleapis";
 import type { OAuth2Client } from "google-auth-library";
 import { config } from "@/lib/config";
+import { companyKeyFor } from "@/lib/company";
+import { AUTO_STATUS, type Alias } from "@/lib/positions";
 
 // Manual-override choices offered in the dashboard dropdown. Auto statuses set by
 // ingestion (the email's "step", e.g. "VP interview") can be any text — these are
@@ -177,9 +179,84 @@ export async function updateStatus(
     spreadsheetId: config.sheets.spreadsheetId,
     range: `${config.sheets.dataSheet}!I${match.rowNumber}`, // Status is column I
     valueInputOption: "USER_ENTERED",
-    requestBody: { values: [[status]] },
+    // "Auto" clears a manual override: status = step is what ingestion writes.
+    requestBody: { values: [[status === AUTO_STATUS ? match.step : status]] },
   });
   return true;
+}
+
+/**
+ * Per-email edit from the dashboard, addressed by Sheet row (rows are
+ * append-only, so row numbers are stable). The caller passes the row's
+ * threadId + received as a guard; a mismatch means the sheet was edited by
+ * hand and nothing is written.
+ *   status  — e.g. "Hidden" (drop from cards) or "Auto" (back to its step)
+ *   company — reassign the email to another company; Source becomes "manual"
+ *             so reprocess never moves it back.
+ */
+export async function updateRow(
+  auth: OAuth2Client,
+  rowNumber: number,
+  guard: { threadId: string; received: string },
+  edit: { status?: string; company?: string },
+): Promise<"ok" | "not_found" | "mismatch"> {
+  const sheets = sheetsClient(auth);
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: config.sheets.spreadsheetId,
+    range: `${config.sheets.dataSheet}!A${rowNumber}:N${rowNumber}`,
+  });
+  const r = res.data.values?.[0];
+  if (!r || rowNumber < 2) return "not_found";
+  if ((r[10] ?? "") !== guard.threadId || (r[0] ?? "") !== guard.received) return "mismatch";
+
+  const sheet = config.sheets.dataSheet;
+  const data: { range: string; values: string[][] }[] = [];
+  if (edit.status !== undefined) {
+    const value = edit.status === AUTO_STATUS ? (r[4] ?? "") : edit.status;
+    data.push({ range: `${sheet}!I${rowNumber}`, values: [[value]] });
+  }
+  if (edit.company !== undefined) {
+    data.push({
+      range: `${sheet}!B${rowNumber}:C${rowNumber}`,
+      values: [[edit.company, companyKeyFor(edit.company)]],
+    });
+    data.push({ range: `${sheet}!J${rowNumber}`, values: [["manual"]] });
+  }
+  await batchUpdateValues(auth, data);
+  return "ok";
+}
+
+/** Manual merges. Missing tab (never merged anything) → none. */
+export async function readAliases(auth: OAuth2Client): Promise<Alias[]> {
+  const sheets = sheetsClient(auth);
+  try {
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: config.sheets.spreadsheetId,
+      range: `${config.sheets.aliasSheet}!A:C`,
+    });
+    return (res.data.values ?? [])
+      .map((r) => ({ fromKey: r[0] ?? "", toKey: r[1] ?? "", fromName: r[2] ?? "" }))
+      .filter((a) => a.fromKey && a.toKey && a.fromKey !== a.toKey);
+  } catch (err) {
+    if (/Unable to parse range/i.test(String(err))) return [];
+    throw err;
+  }
+}
+
+/** Rewrites the whole Aliases tab (it's tiny) — the simplest way to delete. */
+export async function writeAliases(auth: OAuth2Client, aliases: Alias[]): Promise<void> {
+  await ensureSheets(auth);
+  const sheets = sheetsClient(auth);
+  const range = `${config.sheets.aliasSheet}!A:D`;
+  await sheets.spreadsheets.values.clear({ spreadsheetId: config.sheets.spreadsheetId, range });
+  if (aliases.length === 0) return;
+  const now = new Date().toISOString();
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: config.sheets.spreadsheetId,
+    range: `${config.sheets.aliasSheet}!A1`,
+    valueInputOption: "RAW",
+    requestBody: { values: aliases.map((a) => [a.fromKey, a.toKey, a.fromName, now]) },
+  });
 }
 
 /** Raw email content cached at ingest so classification can be re-run offline
@@ -339,6 +416,7 @@ export async function ensureSheets(auth: OAuth2Client): Promise<void> {
     config.sheets.processedSheet,
     config.sheets.metaSheet,
     config.sheets.rawSheet,
+    config.sheets.aliasSheet,
   ].filter((t) => !titles.has(t));
   if (toCreate.length > 0) {
     await sheets.spreadsheets.batchUpdate({

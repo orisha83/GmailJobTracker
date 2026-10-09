@@ -17,6 +17,7 @@ import {
   getLastChecked,
   getProcessedIds,
   markProcessedBatch,
+  readRows,
   setLastChecked,
   type NewJobRow,
   type ProcessedEntry,
@@ -27,6 +28,7 @@ import { config } from "@/lib/config";
 import { guardOfferDowngrade, stripSelfInterviewer, type EmailAnalyzer } from "@/lib/ai/analyzer";
 import { getAnalyzer } from "@/lib/ai";
 import { classifyHeuristically, looksLikeInvitation } from "@/lib/classify/heuristics";
+import { knownCompanies, snapToKnown } from "@/lib/company";
 
 export interface PollResult {
   scanned: number; // messages handled this run (rule + ai)
@@ -40,13 +42,6 @@ export interface PollResult {
   failed: number; // analyzer returned null (transient — retried next run)
   deferred: number; // left for the next run (AI budget reached)
   query: string;
-}
-
-/** Stable position key from the company name (domain fallback if unknown). */
-function companyKeyFor(company: string, domain: string): string {
-  const slug = (company || "").toLowerCase().replace(/[^a-z0-9]+/g, "").trim();
-  if (slug && slug !== "unknown") return slug;
-  return (domain || "").toLowerCase().trim() || "unknown";
 }
 
 function sleep(ms: number): Promise<void> {
@@ -91,6 +86,9 @@ export async function runPoll(analyzer: EmailAnalyzer = getAnalyzer()): Promise<
   // inside an already-tracked conversation, so we track per MESSAGE, not thread.
   const messages = await searchMessages(auth, query);
   const processed = await getProcessedIds(auth);
+  // Companies already tracked — new mail that names one (in the subject or via
+  // the sender domain) joins that card instead of opening a duplicate.
+  const known = knownCompanies(await readRows(auth));
 
   // Batch writes + alerts; flush once at the end (Sheets write-quota friendly).
   const rowsToAppend: NewJobRow[] = [];
@@ -186,10 +184,11 @@ export async function runPoll(analyzer: EmailAnalyzer = getAnalyzer()): Promise<
     });
 
     if (analysis.is_relevant) {
-      const companyKey = companyKeyFor(analysis.company, message.senderDomain);
+      const { company, companyKey } = snapToKnown(analysis.company, message, known);
+      if (!known.some((k) => k.key === companyKey)) known.push({ key: companyKey, name: company });
       rowsToAppend.push({
         received: message.date,
-        company: analysis.company,
+        company,
         companyKey,
         role: analysis.role,
         step: analysis.step,
@@ -206,7 +205,7 @@ export async function runPoll(analyzer: EmailAnalyzer = getAnalyzer()): Promise<
       // Interviews and offers are action-worthy → bundle into the digest.
       if (analysis.category === "Invitation" || analysis.category === "Offer") {
         alerts.push({
-          company: analysis.company,
+          company,
           companyKey,
           role: analysis.role,
           step: analysis.step,

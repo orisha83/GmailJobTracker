@@ -314,3 +314,77 @@ describe("runReprocess — raw backfill from Gmail", () => {
     expect(report.changes).toEqual([]);
   });
 });
+
+describe("runReprocess — company re-resolution", () => {
+  const gongApplied = row({
+    rowNumber: 2,
+    messageId: "m1",
+    company: "Gong",
+    companyKey: "gong",
+    source: "rule",
+  });
+  const orphan = row({
+    rowNumber: 3,
+    messageId: "m2",
+    company: "Tamar Dekel Romano",
+    companyKey: "tamardekelromano",
+    category: "Rejection",
+    step: "Rejected",
+    source: "rule",
+  });
+  const orphanRaw = raw({
+    messageId: "m2",
+    senderName: "Tamar Dekel Romano",
+    senderDomain: "gong.io",
+    subject: "Thank you for considering Gong, Ori",
+    body: "Unfortunately, we won't be moving forward.",
+  });
+
+  it("moves a rule row filed under a recruiter's name onto the known company", async () => {
+    vi.mocked(readRows).mockResolvedValue([gongApplied, orphan]);
+    vi.mocked(readRawEmails).mockResolvedValue(new Map([["m2", orphanRaw]]));
+    const report = await runReprocess({ dryRun: false }, spyAnalyzer([]));
+    expect(report.changes).toContainEqual(
+      expect.objectContaining({ rowNumber: 3, field: "company", oldValue: "Tamar Dekel Romano", newValue: "Gong" }),
+    );
+    expect(vi.mocked(batchUpdateValues).mock.calls[0][1]).toContainEqual({
+      range: "Tracker!B3:C3",
+      values: [["Gong", "gong"]],
+    });
+  });
+
+  it("never moves an AI row or a manually moved row", async () => {
+    for (const source of ["ai", "manual"]) {
+      vi.clearAllMocks();
+      vi.mocked(readRows).mockResolvedValue([gongApplied, { ...orphan, source }]);
+      vi.mocked(readRawEmails).mockResolvedValue(new Map([["m2", orphanRaw]]));
+      const report = await runReprocess({ dryRun: true }, spyAnalyzer([]));
+      expect(report.changes.filter((c) => c.field === "company")).toEqual([]);
+    }
+  });
+
+  it("classifies a cached HTML body by its text", async () => {
+    vi.mocked(readRows).mockResolvedValue([
+      row({ rowNumber: 2, messageId: "m1", company: "Quantum-Art", category: "Applied", step: "Applied", source: "rule" }),
+    ]);
+    vi.mocked(readRawEmails).mockResolvedValue(
+      new Map([
+        [
+          "m1",
+          raw({
+            messageId: "m1",
+            senderName: "Quantum-Art",
+            senderDomain: "quantum.art.comeet-notifications.com",
+            subject: "Thank you for applying for the Product Manager position at Quantum-Art",
+            body:
+              "<html><head><style>p{margin:0}</style></head><body><p>Dear Ori,</p><p>Thank you for your interest. After careful review, we&rsquo;ve decided to move forward with candidates whose experience is a closer fit for our current needs. We wish you the best.</p></body></html>",
+          }),
+        ],
+      ]),
+    );
+    const report = await runReprocess({ dryRun: true }, spyAnalyzer([]));
+    expect(report.changes).toContainEqual(
+      expect.objectContaining({ field: "category", oldValue: "Applied", newValue: "Rejection" }),
+    );
+  });
+});

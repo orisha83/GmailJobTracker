@@ -33,6 +33,7 @@ import { classifyHeuristically, looksLikeInvitation } from "@/lib/classify/heuri
 import { guardOfferDowngrade, stripSelfInterviewer, type EmailAnalyzer } from "@/lib/ai/analyzer";
 import { getAnalyzer } from "@/lib/ai";
 import { config } from "@/lib/config";
+import { companyKeyFor } from "@/lib/company";
 
 export interface BackfillReport {
   threadsScanned: number;
@@ -44,13 +45,6 @@ export interface BackfillReport {
   failed: number;
   done: boolean; // false → budget/cap hit; call again with startIndex = nextIndex
   nextIndex?: number;
-}
-
-/** Stable position key from the company name (mirrors poll.ts). */
-function companyKeyFor(company: string, domain: string): string {
-  const slug = (company || "").toLowerCase().replace(/[^a-z0-9]+/g, "").trim();
-  if (slug && slug !== "unknown") return slug;
-  return (domain || "").toLowerCase().trim() || "unknown";
 }
 
 function sleep(ms: number): Promise<void> {

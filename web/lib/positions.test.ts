@@ -263,3 +263,95 @@ describe("buildPositions — segmentation still works with derived status", () =
     expect(positions[0].status).toBe("HR screen");
   });
 });
+
+describe("buildPositions — company identity, merges, hidden emails", () => {
+  const applied = job({
+    messageId: "a1",
+    company: "Armis",
+    companyKey: "armis",
+    received: "2026-07-01T09:00:00.000Z",
+  });
+  const rejected = job({
+    messageId: "a2",
+    company: "Armis Security",
+    companyKey: "armissecurity",
+    category: "Rejection",
+    step: "Rejected",
+    received: "2026-07-10T09:00:00.000Z",
+  });
+
+  it("suffix variants share one card, so the rejection closes the application", () => {
+    const ps = buildPositions([applied, rejected]);
+    expect(ps).toHaveLength(1);
+    expect(ps[0].status).toBe("Rejected");
+    expect(["Armis", "Armis Security"]).toContain(ps[0].company); // tie → either name
+  });
+
+  it("a manual merge folds an orphan rejection (recruiter's name) into the application", () => {
+    const orphan = job({
+      messageId: "g2",
+      company: "Tamar Dekel Romano",
+      companyKey: "tamardekelromano",
+      category: "Rejection",
+      step: "Rejected",
+      received: "2026-07-10T09:00:00.000Z",
+    });
+    const gong = job({ messageId: "g1", company: "Gong", companyKey: "gong" });
+
+    expect(buildPositions([gong, orphan])).toHaveLength(2);
+
+    const merged = buildPositions(
+      [gong, orphan],
+      [{ fromKey: "tamardekelromano", toKey: "gong", fromName: "Tamar Dekel Romano" }],
+    );
+    expect(merged).toHaveLength(1);
+    expect(merged[0].company).toBe("Gong"); // the target's name wins
+    expect(merged[0].status).toBe("Rejected");
+    expect(merged[0].mergedFrom.map((a) => a.fromKey)).toEqual(["tamardekelromano"]);
+    expect(merged[0].jobs.map((j) => j.messageId)).toEqual(["g2", "g1"]);
+  });
+
+  it("follows alias chains and survives cycles", () => {
+    const a = job({ messageId: "1", company: "Alpha", companyKey: "alpha" });
+    const b = job({ messageId: "2", company: "Bravo", companyKey: "bravo" });
+    const c = job({ messageId: "3", company: "Charlie", companyKey: "charlie" });
+    const chain = buildPositions(
+      [a, b, c],
+      [
+        { fromKey: "alpha", toKey: "bravo", fromName: "Alpha" },
+        { fromKey: "bravo", toKey: "charlie", fromName: "Bravo" },
+      ],
+    );
+    expect(chain).toHaveLength(1);
+    expect(chain[0].groupKey).toBe("charlie");
+    const cycle = buildPositions(
+      [a, b],
+      [
+        { fromKey: "alpha", toKey: "bravo", fromName: "Alpha" },
+        { fromKey: "bravo", toKey: "alpha", fromName: "Bravo" },
+      ],
+    );
+    expect(cycle.length).toBeGreaterThan(0); // no infinite loop
+  });
+
+  it("hidden emails are dropped from cards (and a fully hidden company disappears)", () => {
+    const junk = job({ messageId: "n1", company: "Various", companyKey: "various", status: "Hidden" });
+    const ps = buildPositions([applied, junk]);
+    expect(ps.map((p) => p.company)).toEqual(["Armis"]);
+  });
+
+  it("a hidden false rejection no longer closes the position", () => {
+    const ps = buildPositions([applied, { ...rejected, status: "Hidden" }]);
+    expect(ps).toHaveLength(1);
+    expect(ps[0].status).toBe("Applied");
+  });
+
+  it("memberKeys lists every row key folded into the card (merge source set)", () => {
+    const ps = buildPositions([
+      job({ messageId: "1", company: "AppsFlyer", companyKey: "appsflyer" }),
+      job({ messageId: "2", company: "AppFlyer", companyKey: "appflyer" }),
+    ]);
+    expect(ps).toHaveLength(1);
+    expect(ps[0].memberKeys.map((m) => m.key).sort()).toEqual(["appflyer", "appsflyer"]);
+  });
+});

@@ -6,6 +6,7 @@
  * copied from the latest one: an ack/"under review" arriving after an interview
  * invitation must never drag the position back to "Applied".
  */
+import { groupKeyFor, sameCompany } from "@/lib/company";
 
 // Manual-override options (mirrors PIPELINE_STATUSES in lib/google/sheets.ts).
 export const OVERRIDE_STATUSES = [
@@ -19,8 +20,26 @@ export const OVERRIDE_STATUSES = [
 
 export const STALE_DAYS = 14;
 
+// Status written on a single email row to drop it from every card (not job
+// mail, a duplicate). Kept out of OVERRIDE_STATUSES: it's a per-email action.
+export const HIDDEN_STATUS = "Hidden";
+// Pseudo-status the dashboard sends to clear a manual override (row status
+// goes back to its step, so the derived status takes over again).
+export const AUTO_STATUS = "Auto";
+export const isHidden = (j: { status: string }) => norm(j.status) === "hidden";
+
+/** A manual merge: every row grouped under `fromKey` belongs to `toKey`. */
+export interface Alias {
+  fromKey: string;
+  toKey: string;
+  /** Company name the merged card showed, for the "unmerge" chip. */
+  fromName: string;
+}
+
 /** One raw Sheet row = one email/round in a conversation. */
 export interface Job {
+  /** 1-based Sheet row (rows are append-only, so this is stable). */
+  rowNumber?: number;
   received: string;
   company: string;
   companyKey: string;
@@ -54,6 +73,10 @@ export interface Position {
   latestMessageId: string;
   link: string; // best job/careers URL from the position's emails ("" if none)
   interviewer: string; // named interviewer for the upcoming interview ("" if none)
+  groupKey: string; // canonical company key (after manual merges) — merge target
+  memberKeys: { key: string; name: string }[]; // row-level keys folded into this card
+  mergedFrom: Alias[]; // manual merges INTO this company (unmerge chips)
+  jobs: Job[]; // this card's emails, newest first
 }
 
 export const norm = (s: string) => (s || "").trim().toLowerCase();
@@ -76,46 +99,6 @@ export const isRealRole = (role: string) => {
   const r = norm(role);
   return r !== "" && !PLACEHOLDER_ROLES.has(r);
 };
-
-// Levenshtein distance ≤1 check (used to merge AI spelling variants of one company).
-function within1Edit(a: string, b: string): boolean {
-  if (a === b) return true;
-  const la = a.length;
-  const lb = b.length;
-  if (Math.abs(la - lb) > 1) return false;
-  let i = 0;
-  let j = 0;
-  let edits = 0;
-  while (i < la && j < lb) {
-    if (a[i] === b[j]) {
-      i++;
-      j++;
-      continue;
-    }
-    if (++edits > 1) return false;
-    if (la > lb) i++;
-    else if (lb > la) j++;
-    else {
-      i++;
-      j++;
-    }
-  }
-  if (i < la || j < lb) edits++;
-  return edits <= 1;
-}
-
-// Two company keys are the same company if they differ by ≤1 edit (spelling
-// variant) or one contains the other ("sweetsecurity" ⊃ "sweetsecure"). The
-// length floor keeps short brand prefixes from swallowing distinct companies:
-// "papaya" (Papaya Gaming) ⊂ "papayaglobal" (Papaya Global) are DIFFERENT
-// employers — merging them let one company's rejection close the other's
-// position. Containment only counts when the shorter key is specific enough.
-function sameCompany(a: string, b: string): boolean {
-  if (a === "unknown" || b === "unknown") return false;
-  if (within1Edit(a, b)) return true;
-  if (a.length >= 7 && b.length >= 7 && (a.includes(b) || b.includes(a))) return true;
-  return false;
-}
 
 // Role word-set, used to fold a generic role into a more specific one
 // ("Product Manager" ⊂ "Product Manager, Payments").
@@ -275,7 +258,16 @@ export function derivePositionState(jobs: Job[]): {
   };
 }
 
-export function makePosition(company: string, role: string, jobs: Job[]): Position {
+export function makePosition(
+  company: string,
+  role: string,
+  jobs: Job[],
+  group: Pick<Position, "groupKey" | "memberKeys" | "mergedFrom"> = {
+    groupKey: norm(jobs[0]?.companyKey || company),
+    memberKeys: [],
+    mergedFrom: [],
+  },
+): Position {
   const byRecent = [...jobs].sort((a, b) => (b.received || "").localeCompare(a.received || ""));
   const latest = byRecent[0];
   const lastUpdate = latest?.received || "";
@@ -284,7 +276,7 @@ export function makePosition(company: string, role: string, jobs: Job[]): Positi
   const pos: Position = {
     // Include the latest thread id so two segments of one company (e.g.
     // applied → rejected → re-applied to the same role) never collide.
-    key: `${norm(latest?.companyKey || company)}|${norm(role)}|${latest?.threadId ?? ""}`,
+    key: `${group.groupKey}|${norm(role)}|${latest?.threadId ?? ""}`,
     company,
     role: role || "—",
     status: derived.status,
@@ -304,29 +296,40 @@ export function makePosition(company: string, role: string, jobs: Job[]): Positi
         jobs.find((j) => j.interviewDateTime === nextInterview && j.interviewer)?.interviewer) ||
       byRecent.find((j) => j.interviewer)?.interviewer ||
       "",
+    ...group,
+    jobs: byRecent,
   };
   pos.stale = !isTerminal(pos) && daysSince(lastUpdate) > STALE_DAYS;
   return pos;
 }
 
 /** Most frequent non-"Unknown" company name in a group (so a recruiter's
- *  personal name never wins the position label). */
-function bestCompanyName(group: Job[]): string {
-  const counts = new Map<string, number>();
-  for (const j of group) {
-    const name = (j.company || "").trim();
-    if (!name || name.toLowerCase() === "unknown") continue;
-    counts.set(name, (counts.get(name) ?? 0) + 1);
-  }
-  let best = "";
-  let bestN = 0;
-  for (const [name, n] of counts) {
-    if (n > bestN) {
-      bestN = n;
-      best = name;
+ *  personal name never wins the position label). Names from `preferred` rows
+ *  (the merge target's own emails) win over names folded in from elsewhere. */
+function bestCompanyName(group: Job[], preferred: (j: Job) => boolean = () => true): string {
+  const pick = (rows: Job[]) => {
+    const counts = new Map<string, number>();
+    for (const j of rows) {
+      const name = (j.company || "").trim();
+      if (!name || name.toLowerCase() === "unknown") continue;
+      counts.set(name, (counts.get(name) ?? 0) + 1);
     }
-  }
-  return best || group.find((j) => j.company?.trim())?.company?.trim() || "Unknown";
+    let best = "";
+    let bestN = 0;
+    for (const [name, n] of counts) {
+      if (n > bestN) {
+        bestN = n;
+        best = name;
+      }
+    }
+    return best;
+  };
+  return (
+    pick(group.filter(preferred)) ||
+    pick(group) ||
+    group.find((j) => j.company?.trim())?.company?.trim() ||
+    "Unknown"
+  );
 }
 
 // A segment's role label = the most-specific real role (largest word-set),
@@ -345,19 +348,39 @@ function pickSegmentRole(jobs: Job[]): string {
   })[0].role.trim();
 }
 
-/** Group events into positions: one card per company, split at each rejection. */
-export function buildPositions(jobs: Job[]): Position[] {
+/** Follows manual-merge aliases from `key` to its final company (cycle-safe). */
+export function resolveAlias(key: string, aliases: Map<string, string>): string {
+  let k = key;
+  const seen = new Set<string>();
+  while (aliases.has(k) && !seen.has(k)) {
+    seen.add(k);
+    k = aliases.get(k)!;
+  }
+  return k;
+}
+
+/**
+ * Group events into positions: one card per company, split at each rejection.
+ * Hidden rows are dropped; manual merges (aliases) are applied both to each
+ * row's key and to the fuzzy-merged canonical key, so a merge sticks even as
+ * the group's dominant spelling shifts with new mail.
+ */
+export function buildPositions(allJobs: Job[], aliasList: Alias[] = []): Position[] {
+  const aliases = new Map(aliasList.map((a) => [a.fromKey, a.toKey]));
+  const jobs = allJobs.filter((j) => !isHidden(j));
+  const rowKey = new Map<Job, string>();
+  for (const j of jobs) rowKey.set(j, groupKeyFor(j));
+
   const byCompany = new Map<string, Job[]>();
   for (const j of jobs) {
-    const k = norm(j.companyKey) || norm(j.company) || "unknown";
+    const k = resolveAlias(rowKey.get(j)!, aliases);
     const arr = byCompany.get(k) ?? [];
     arr.push(j);
     byCompany.set(k, arr);
   }
 
   // Merge keys that are AI spelling variants of one company (e.g. appflyer ↔
-  // appsflyer). Bigger groups win the canonical key; only keys ≥6 chars and
-  // within one edit are merged, so distinct short names stay separate.
+  // appsflyer). Bigger groups win the canonical key (see sameCompany).
   const ordered = [...byCompany.entries()].sort((a, b) => b[1].length - a[1].length);
   const merged = new Map<string, Job[]>();
   for (const [key, group] of ordered) {
@@ -370,14 +393,25 @@ export function buildPositions(jobs: Job[]): Position[] {
         }
       }
     }
+    canonical = resolveAlias(canonical, aliases);
     const arr = merged.get(canonical) ?? [];
     arr.push(...group);
     merged.set(canonical, arr);
   }
 
   const positions: Position[] = [];
-  for (const group of merged.values()) {
-    const companyName = bestCompanyName(group);
+  for (const [groupKey, group] of merged) {
+    const companyName = bestCompanyName(group, (j) => rowKey.get(j) === groupKey);
+    const members = new Map<string, string>();
+    for (const j of group) {
+      const k = rowKey.get(j)!;
+      if (!members.has(k) || members.get(k)?.toLowerCase() === "unknown") members.set(k, j.company);
+    }
+    const meta = {
+      groupKey,
+      memberKeys: [...members].map(([key, name]) => ({ key, name })),
+      mergedFrom: aliasList.filter((a) => resolveAlias(a.toKey, aliases) === groupKey),
+    };
 
     // One card per company by default. Walk events oldest→newest and close a
     // segment after each rejection, so activity that arrives after a rejection
@@ -389,12 +423,12 @@ export function buildPositions(jobs: Job[]): Position[] {
     for (const j of chronological) {
       segment.push(j);
       if (isRejectedEvent(j)) {
-        positions.push(makePosition(companyName, pickSegmentRole(segment), segment));
+        positions.push(makePosition(companyName, pickSegmentRole(segment), segment, meta));
         segment = [];
       }
     }
     if (segment.length) {
-      positions.push(makePosition(companyName, pickSegmentRole(segment), segment));
+      positions.push(makePosition(companyName, pickSegmentRole(segment), segment, meta));
     }
   }
 

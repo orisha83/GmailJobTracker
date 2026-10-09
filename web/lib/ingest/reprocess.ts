@@ -9,9 +9,15 @@
  * budget for one invocation is spent, the report returns done=false and
  * `nextRow`, and the caller re-invokes from there. Rows whose raw content was
  * never cached (pre-Raw-tab ingests) are recovered from Gmail and cached.
+ *
+ * Company: rows the RULES classified (Source "rule") also get their company
+ * re-resolved with the current extractor + known-company snapping, so a
+ * rejection filed under a recruiter's name or an ATS domain rejoins its
+ * application's card. AI rows and rows moved by hand ("manual") keep theirs.
  */
 import { makeAuthedClient } from "@/lib/google/auth";
 import { fetchMessage, listThreadMessageIds, type FetchedMessage } from "@/lib/google/gmail";
+import { looksLikeHtml, toPlainText } from "@/lib/html";
 import {
   appendRawEmails,
   batchUpdateValues,
@@ -25,12 +31,19 @@ import { classifyHeuristically, looksLikeInvitation } from "@/lib/classify/heuri
 import { guardOfferDowngrade, stripSelfInterviewer, type EmailAnalyzer } from "@/lib/ai/analyzer";
 import { getAnalyzer } from "@/lib/ai";
 import { config } from "@/lib/config";
+import {
+  UNSNAPPABLE,
+  groupKeyFor,
+  knownCompanies,
+  snapToKnown,
+  type KnownCompany,
+} from "@/lib/company";
 
 export interface ReprocessChange {
   rowNumber: number;
   company: string;
   role: string;
-  field: "step" | "category" | "interviewDateTime" | "status";
+  field: "step" | "category" | "interviewDateTime" | "status" | "company";
   oldValue: string;
   newValue: string;
 }
@@ -57,7 +70,8 @@ function toFetchedMessage(raw: RawEmail): FetchedMessage {
     id: raw.messageId,
     threadId: raw.threadId,
     subject: raw.subject,
-    body: raw.body,
+    // Older ingests cached raw HTML; classify its text, not its markup.
+    body: toPlainText(raw.body),
     date: raw.received,
     senderName: raw.senderName,
     senderDomain: raw.senderDomain,
@@ -74,11 +88,17 @@ async function resolveRaw(
   rawByMessageId: Map<string, RawEmail>,
   recovered: RawEmail[],
 ): Promise<RawEmail | null> {
+  // A cached HTML body truncated before any message text (CSS-heavy
+  // templates) is useless — re-fetch it from Gmail as text instead.
+  const usable = (raw: RawEmail) =>
+    !looksLikeHtml(raw.body) || toPlainText(raw.body).length >= 80;
   if (row.messageId && rawByMessageId.has(row.messageId)) {
-    return rawByMessageId.get(row.messageId)!;
-  }
-  for (const raw of rawByMessageId.values()) {
-    if (raw.threadId === row.threadId && raw.received === row.received) return raw;
+    const raw = rawByMessageId.get(row.messageId)!;
+    if (usable(raw)) return raw;
+  } else {
+    for (const raw of rawByMessageId.values()) {
+      if (raw.threadId === row.threadId && raw.received === row.received && usable(raw)) return raw;
+    }
   }
 
   // Not cached (ingested before the Raw tab existed) — recover from Gmail.
@@ -110,6 +130,31 @@ async function resolveRaw(
   }
 }
 
+/**
+ * The corrected company for a rule row, or null when it already groups right.
+ * Conservative: a row moves only onto a company we ALREADY track (rejoining
+ * its card), or away from a name that is plainly wrong — the sender's personal
+ * display name, an email address, or an infrastructure label like "Us"/"Mail".
+ */
+function companyFix(
+  row: TrackedJob,
+  extracted: string,
+  message: FetchedMessage,
+  known: KnownCompany[],
+): { company: string; companyKey: string } | null {
+  const snapped = snapToKnown(extracted, message, known);
+  const oldKey = groupKeyFor(row);
+  if (snapped.companyKey === "unknown" || snapped.companyKey === oldKey) return null;
+  if (snapped.company.trim().toLowerCase() === row.company.trim().toLowerCase()) return null;
+  const old = row.company.trim();
+  const plainlyWrong =
+    old.includes("@") ||
+    UNSNAPPABLE.has(oldKey) ||
+    old.toLowerCase() === (message.senderName || "").trim().toLowerCase();
+  const rejoins = known.some((k) => k.key === snapped.companyKey && k.key !== oldKey);
+  return rejoins || plainlyWrong ? snapped : null;
+}
+
 export async function runReprocess(
   opts: { dryRun?: boolean; limit?: number; startRow?: number } = {},
   analyzer: EmailAnalyzer = getAnalyzer(),
@@ -120,7 +165,9 @@ export async function runReprocess(
 
   const auth = makeAuthedClient();
   await ensureSheets(auth); // the Raw tab may not exist yet on older sheets
-  const rows = (await readRows(auth)).filter((r) => r.rowNumber >= startRow);
+  const allRows = await readRows(auth);
+  const rows = allRows.filter((r) => r.rowNumber >= startRow);
+  const known: KnownCompany[] = knownCompanies(allRows);
   const rawByMessageId = await readRawEmails(auth);
   const recovered: RawEmail[] = [];
 
@@ -189,6 +236,18 @@ export async function runReprocess(
     report.reclassified++;
     if (!analysis.is_relevant) continue; // never degrade an existing row
 
+    const base = { rowNumber: row.rowNumber, company: row.company, role: row.role };
+    if (row.source === "rule") {
+      const fixed = companyFix(row, analysis.company, message, known);
+      if (fixed) {
+        report.changes.push({ ...base, field: "company", oldValue: row.company, newValue: fixed.company });
+        updates.push({
+          range: `${sheet}!B${row.rowNumber}:C${row.rowNumber}`,
+          values: [[fixed.company, fixed.companyKey]],
+        });
+      }
+    }
+
     // The rules classifier only outranks the original classification for
     // rejections (high-precision regex). A rule "Applied" must never downgrade
     // a row the AI read as Invitation/Rejection/Offer — the model saw context
@@ -212,7 +271,6 @@ export async function runReprocess(
         ? row.interviewDateTime
         : (analysis.interview_datetime ?? "");
     const rowChanges: ReprocessChange[] = [];
-    const base = { rowNumber: row.rowNumber, company: row.company, role: row.role };
     if (newStep !== row.step) {
       rowChanges.push({ ...base, field: "step", oldValue: row.step, newValue: newStep });
     }

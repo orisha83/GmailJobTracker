@@ -61,6 +61,8 @@ export const config = {
     // Hidden cache of raw email content (subject/body) so misclassified mail
     // can be re-analyzed offline without re-reading Gmail.
     rawSheet: env("SHEET_RAW_TAB") ?? "Raw",
+    // Hidden tab of manual company merges (fromKey → toKey) made on the dashboard.
+    aliasSheet: env("SHEET_ALIASES_TAB") ?? "Aliases",
   },
   // Which analyzer to use: "gemini" (default — free tier) or "claude" (paid).
   // Default is Gemini so the tracker runs at $0 out of the box; set

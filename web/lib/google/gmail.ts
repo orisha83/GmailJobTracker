@@ -4,6 +4,7 @@
  */
 import { google, type gmail_v1 } from "googleapis";
 import type { OAuth2Client } from "google-auth-library";
+import { htmlToText, toPlainText } from "@/lib/html";
 
 export interface FetchedMessage {
   id: string;
@@ -61,7 +62,10 @@ export interface MessageHit {
 export async function searchMessages(
   auth: OAuth2Client,
   query: string,
-  maxResults = 300,
+  // High on purpose: list calls are cheap (ids only) and dedup skips seen
+  // mail before any fetch. A low cap silently dropped the OLDEST matches
+  // whenever a backlog built up (e.g. after an outage froze the watermark).
+  maxResults = 2000,
 ): Promise<MessageHit[]> {
   const gmail = gmailClient(auth);
   const hits: MessageHit[] = [];
@@ -107,22 +111,32 @@ export async function listThreadMessageIds(
     }));
 }
 
-/** Recursively walk MIME parts and decode the first text/plain body found. */
-function extractPlainBody(payload?: gmail_v1.Schema$MessagePart): string {
-  if (!payload) return "";
-
-  const decode = (data?: string | null): string =>
-    data ? Buffer.from(data, "base64url").toString("utf-8") : "";
-
-  if (payload.mimeType === "text/plain" && payload.body?.data) {
-    return decode(payload.body.data);
+/** Depth-first search for the first part of `mimeType` that carries data. */
+function findPart(
+  payload: gmail_v1.Schema$MessagePart | undefined,
+  mimeType: string,
+): string | null {
+  if (!payload) return null;
+  if (payload.mimeType === mimeType && payload.body?.data) {
+    return Buffer.from(payload.body.data, "base64url").toString("utf-8");
   }
   for (const part of payload.parts ?? []) {
-    const found = extractPlainBody(part);
-    if (found) return found;
+    const found = findPart(part, mimeType);
+    if (found != null) return found;
   }
-  // Fall back to top-level body (e.g. simple messages) even if not text/plain.
-  return decode(payload.body?.data);
+  return null;
+}
+
+/** The message's readable text: text/plain anywhere in the MIME tree, else
+ *  text/html converted to text, else the top-level body. */
+function extractBody(payload?: gmail_v1.Schema$MessagePart): string {
+  if (!payload) return "";
+  const plain = findPart(payload, "text/plain");
+  if (plain?.trim()) return toPlainText(plain);
+  const html = findPart(payload, "text/html");
+  if (html != null) return htmlToText(html);
+  const top = payload.body?.data ? Buffer.from(payload.body.data, "base64url").toString("utf-8") : "";
+  return toPlainText(top);
 }
 
 // Links we never want to surface as a "company site" — list/footer noise.
@@ -190,7 +204,7 @@ export async function fetchMessage(
     id,
     threadId: msg.threadId ?? "",
     subject,
-    body: extractPlainBody(msg.payload),
+    body: extractBody(msg.payload),
     date,
     senderName,
     senderDomain,

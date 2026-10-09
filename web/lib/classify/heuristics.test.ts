@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { FetchedMessage } from "@/lib/google/gmail";
-import { classifyHeuristically, looksLikeInvitation } from "./heuristics";
+import { classifyHeuristically, extractCompany, looksLikeInvitation } from "./heuristics";
 
 /** Minimal FetchedMessage builder — override only what a test cares about. */
 function msg(partial: Partial<FetchedMessage>): FetchedMessage {
@@ -218,4 +218,104 @@ describe("invitation phrasing with an adjective round name", () => {
     );
     expect(a?.category).toBe("Applied");
   });
+});
+
+describe("company extraction — real misfiled rejections", () => {
+  it.each([
+    // [subject, senderName, senderDomain, expected company]
+    ["Thank you for considering Gong, Ori", "Tamar Dekel Romano", "gong.io", "Gong"],
+    ["Thank you from AppsFlyer", "Ayelet Orgad Raytan", "appsflyer.com", "AppsFlyer"],
+    ["Thank You for Your Application – From Torii", "Maayan Tavor Fridman", "toriihq.com", "Torii"],
+    ["Thank You for Your Time & Consideration - DoiT", "Mary Mkrtchyan", "doit.com", "Doit"],
+    ["Your application: Payoneer Careers", "Michelle Pastron", "payoneer.com", "Payoneer"],
+    ["An update on your Technical Product Manager application in Token Security", "no-reply@eu.greenhouse-mail.io", "eu.greenhouse-mail.io", "Token Security"],
+    ["Similarweb (Job Application Update)", "no-reply@us.greenhouse-mail.io", "us.greenhouse-mail.io", "Similarweb"],
+    ["Amazon application: Status update", "noreply@mail.amazon.jobs", "mail.amazon.jobs", "Amazon"],
+    ["Keep track of your application", "noreply@mail.amazon.jobs", "mail.amazon.jobs", "Amazon"],
+    ["Hooray! Your application for Product Manager at SciPlay is in!", "Workday@sciplay.com", "sciplay.com", "SciPlay"],
+    ["Application Update for Product Manager with SciPlay", "lnw@myworkday.com", "myworkday.com", "SciPlay"],
+    ["Your Application to Product Manager - Check Point Software Technologies", "Check Point Software Technologies Hiring Team", "checkpoint.com", "Check Point Software Technologies"],
+    ["Product Manager @ Lama AI", "Shir Grizim", "lama.ai", "Lama AI"],
+    ["Act Security Application Update", "Efrat Green", "act.security", "Act Security"],
+    ["Thank You for Your Interest in Stigg", "Stigg Hiring Team", "ashbyhq.com", "Stigg"],
+    ["Glow Application Update", "Glow Hiring Team", "ashbyhq.com", "Glow"],
+    ["Update from Rakuten Viber - Product Manager – Viber Dating-Ori Shalom", "Viber", "viber.comeet-notifications.com", "Rakuten Viber"],
+    ["Thank you for applying to Jazz", "Tal Icigson", "jazz.comeet-notifications.com", "Jazz"],
+    ["Hello", "Tal Icigson", "jazz.comeet-notifications.com", "Jazz"],
+    ["Hello", "Jessica Lamdan - Intelligo", "gmail.com", "Intelligo"],
+    ["Hello", "Check Point HR", "checkpoint.com", "Check Point"],
+  ])("%s → %s", (subject, senderName, senderDomain, company) => {
+    expect(extractCompany(msg({ subject, senderName, senderDomain }))).toBe(company);
+  });
+
+  it("keeps a role-only subject capture out of the company", () => {
+    expect(
+      extractCompany(
+        msg({
+          subject: "Thanks for applying to the Platform Product Manager role",
+          senderName: "Acme",
+          senderDomain: "acme.com",
+        }),
+      ),
+    ).toBe("Acme");
+  });
+});
+
+describe("rejection coverage", () => {
+  it("catches 'move forward with candidates whose experience is a closer fit' (Quantum-Art)", () => {
+    const a = classifyHeuristically(
+      msg({
+        subject: "Thank you for applying for the Product Manager position at Quantum-Art",
+        body: "Thank you for your interest in joining our team at Quantum Art. After careful review, we’ve decided to move forward with candidates whose experience is a closer fit for our current needs.",
+      }),
+    );
+    expect(a?.category).toBe("Rejection");
+  });
+
+  it.each([
+    "We have decided to pursue other applicants for this role.",
+    "We've decided to go with another candidate.",
+    "The position has been closed.",
+    "החלטנו שלא להמשיך בתהליך.",
+    "בחרנו להתקדם עם מועמדים אחרים.",
+    "לא נוכל להתקדם עם מועמדותך.",
+  ])("rejects: %s", (body) => {
+    expect(classifyHeuristically(msg({ subject: "Update", body }))?.category).toBe("Rejection");
+  });
+
+  it("'we decided to proceed WITH your candidacy' is not a rejection", () => {
+    const a = classifyHeuristically(msg({ subject: "עדכון", body: "החלטנו להתקדם עם מועמדותך לשלב הבא" }));
+    expect(a?.category).not.toBe("Rejection");
+  });
+
+  it("an ack with 'after careful consideration' goes to the AI, not the Applied shortcut", () => {
+    const a = classifyHeuristically(
+      msg({ subject: "Thank you for applying", body: "Thank you for applying. After careful consideration, …" }),
+    );
+    expect(a).toBeNull();
+  });
+});
+
+describe("noise gate — application-status mail reaches the AI", () => {
+  it("Hebrew 'מועמדותך לתפקיד' (the dropped Orit Kiper email)", () => {
+    expect(looksLikeInvitation(msg({ subject: "מועמדותך לתפקיד Product Manager", body: "שלום אורי" }))).toBe(true);
+  });
+  it("'An update on your application'", () => {
+    expect(looksLikeInvitation(msg({ subject: "An update on your application", body: "" }))).toBe(true);
+  });
+  it("still skips a plain newsletter", () => {
+    expect(looksLikeInvitation(msg({ subject: "Weekly digest", body: "Top stories this week" }))).toBe(false);
+  });
+});
+
+it("'Interview with Jane Doe' never makes the interviewer a company", () => {
+  expect(
+    extractCompany(msg({ subject: "Interview with Jane Doe", senderName: "Acme", senderDomain: "acme.com" })),
+  ).toBe("Acme");
+});
+
+it("a two-word company sender on an abbreviated domain is not a person (Discount Bank)", () => {
+  expect(
+    extractCompany(msg({ subject: "עדכון", senderName: "Discount Bank", senderDomain: "dbank.co.il" })),
+  ).toBe("Discount Bank");
 });
