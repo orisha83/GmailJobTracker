@@ -19,12 +19,15 @@ import {
   type SortKey,
 } from "@/lib/positions";
 import {
+  AddUpdateForm,
+  AddUpdateToggle,
   EmailList,
   EmailsToggle,
   HiddenList,
   MergeSelect,
   MergedChips,
   type CompanyOption,
+  type ManualUpdate,
 } from "./ManageControls";
 
 type Filter = "Active" | "Needs attention" | "Rejected" | "All" | "Hidden";
@@ -33,6 +36,7 @@ const FILTERS: Filter[] = ["Active", "Needs attention", "Rejected", "All", "Hidd
 const CATEGORY_STYLES: Record<string, string> = {
   Invitation: "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200",
   Applied: "bg-sky-100 text-sky-800 ring-1 ring-sky-200",
+  Progress: "bg-indigo-100 text-indigo-800 ring-1 ring-indigo-200",
   Offer: "bg-violet-100 text-violet-800 ring-1 ring-violet-200",
   Rejection: "bg-rose-100 text-rose-800 ring-1 ring-rose-200",
   Other: "bg-slate-100 text-slate-600 ring-1 ring-slate-200",
@@ -99,6 +103,7 @@ export default function Dashboard() {
   const [jobs, setJobs] = useState<Job[] | null>(null);
   const [aliases, setAliases] = useState<Alias[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [addingKey, setAddingKey] = useState<string | null>(null);
   const [savingRow, setSavingRow] = useState<number | null>(null);
   const [merging, setMerging] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -259,6 +264,32 @@ export default function Dashboard() {
       setSavingRow(null);
     }
   }
+
+  /** Manual update → a new row on this card (POST /api/rows), then reload so
+   *  the new row has its Sheet row number (needed for Hide). */
+  async function addUpdate(p: Position, u: ManualUpdate) {
+    const latest = p.jobs[0];
+    await send("/api/rows", "POST", {
+      ...u,
+      company: p.company,
+      companyKey: p.groupKey,
+      role: p.role === "—" ? "" : p.role,
+      threadId: latest?.threadId || p.latestThreadId,
+    });
+    setAddingKey(null);
+    await load();
+  }
+
+  const addForm = (p: Position) =>
+    addingKey === p.key && (
+      <AddUpdateForm position={p} onSave={addUpdate} onCancel={() => setAddingKey(null)} />
+    );
+  const addToggle = (p: Position) => (
+    <AddUpdateToggle
+      open={addingKey === p.key}
+      onToggle={() => setAddingKey(addingKey === p.key ? null : p.key)}
+    />
+  );
 
   const toggleEmails = (key: string) =>
     setExpanded((cur) => {
@@ -447,18 +478,20 @@ export default function Dashboard() {
                           <div className="text-slate-500">{p.role}</div>
                           {p.stale && <StaleBadge />}
                           <MergedChips aliases={p.mergedFrom} disabled={merging} onUnmerge={unmerge} />
-                          <div className="mt-1 -ml-2">
+                          <div className="mt-1 -ml-2 flex flex-wrap items-center">
                             <EmailsToggle
                               count={p.rounds}
                               open={expanded.has(p.key)}
                               onToggle={() => toggleEmails(p.key)}
                             />
+                            {addToggle(p)}
                           </div>
                         </div>
                       </div>
                     </td>
                     <td className="px-4 py-3">
                       <StatusBadge status={p.status} category={p.category} />
+                      <StatusDate position={p} />
                     </td>
                     <td className="px-4 py-3 whitespace-nowrap">
                       <NextInterview position={p} />
@@ -483,10 +516,11 @@ export default function Dashboard() {
                       </div>
                     </td>
                   </tr>
-                  {expanded.has(p.key) && (
+                  {(expanded.has(p.key) || addingKey === p.key) && (
                     <tr>
-                      <td colSpan={5} className="bg-slate-50/40 px-4 pb-4 pt-0">
-                        {emailList(p)}
+                      <td colSpan={5} className="space-y-3 bg-slate-50/40 px-4 pb-4 pt-0">
+                        {addForm(p)}
+                        {expanded.has(p.key) && emailList(p)}
                       </td>
                     </tr>
                   )}
@@ -508,7 +542,10 @@ export default function Dashboard() {
                       <div className="text-sm text-slate-500">{p.role}</div>
                     </div>
                   </div>
-                  <StatusBadge status={p.status} category={p.category} />
+                  <div className="text-right">
+                    <StatusBadge status={p.status} category={p.category} />
+                    <StatusDate position={p} />
+                  </div>
                 </div>
                 {p.stale && <div className="mt-2"><StaleBadge /></div>}
                 <MergedChips aliases={p.mergedFrom} disabled={merging} onUnmerge={unmerge} />
@@ -547,13 +584,15 @@ export default function Dashboard() {
                     onMerge={mergeInto}
                   />
                 </div>
-                <div className="mt-2 -ml-2">
+                <div className="mt-2 -ml-2 flex flex-wrap items-center">
                   <EmailsToggle
                     count={p.rounds}
                     open={expanded.has(p.key)}
                     onToggle={() => toggleEmails(p.key)}
                   />
+                  {addToggle(p)}
                 </div>
+                {addingKey === p.key && <div className="mt-2">{addForm(p)}</div>}
                 {expanded.has(p.key) && <div className="mt-2">{emailList(p)}</div>}
               </div>
             ))}
@@ -670,6 +709,12 @@ function StatusBadge({ status, category }: { status: string; category: string })
       {status || "—"}
     </span>
   );
+}
+
+/** When the status-backing event happened ("since Oct 6"). */
+function StatusDate({ position }: { position: Position }) {
+  if (!position.statusDate) return null;
+  return <div className="mt-1 text-xs text-slate-400">since {fmtDay(position.statusDate)}</div>;
 }
 
 function StaleBadge() {

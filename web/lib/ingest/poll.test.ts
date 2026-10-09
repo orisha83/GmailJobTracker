@@ -16,11 +16,15 @@ vi.mock("@/lib/google/sheets", () => ({
   getProcessedIds: vi.fn(),
   markProcessedBatch: vi.fn(),
   readRows: vi.fn(async () => []),
+  readRawSenderDomains: vi.fn(async () => new Map()),
   appendRows: vi.fn(),
   appendRawEmails: vi.fn(),
   setLastChecked: vi.fn(),
 }));
 vi.mock("@/lib/notify", () => ({ notifyDigest: vi.fn() }));
+vi.mock("@/lib/ingest/sent", () => ({
+  collectSentSubmissions: vi.fn(async () => ({ rows: [], raw: [], processed: [], submissions: [], examined: 0 })),
+}));
 
 import { runPoll } from "./poll";
 import { searchMessages, fetchMessage } from "@/lib/google/gmail";
@@ -34,6 +38,7 @@ import {
   setLastChecked,
 } from "@/lib/google/sheets";
 import { notifyDigest } from "@/lib/notify";
+import { collectSentSubmissions } from "@/lib/ingest/sent";
 
 // Watermark used by all tests (epoch seconds). Messages default to a date far
 // after it; legacy-suppression tests use PRE_WATERMARK_ISO (before it).
@@ -433,5 +438,36 @@ describe("runPoll — known-company snapping", () => {
     await runPoll({ analyze: vi.fn() });
     const rows = vi.mocked(appendRows).mock.calls[0][1];
     expect(rows[0]).toMatchObject({ company: "Gong", companyKey: "gong", category: "Rejection" });
+  });
+});
+
+describe("runPoll — sent-mail submissions", () => {
+  it("saves submission rows with the inbound batch, never as a digest alert", async () => {
+    vi.mocked(getLastChecked).mockResolvedValue(WATERMARK);
+    vi.mocked(getProcessedIds).mockResolvedValue({ messageIds: new Set(), legacyThreadIds: new Set() });
+    feed([]);
+    const sentRow = {
+      received: "2026-10-06T10:00:00.000Z", company: "mPrest", companyKey: "mprest", role: "PM",
+      step: "Assignment submitted", category: "Progress", interviewDateTime: "", summary: "", status: "Assignment submitted",
+      source: "sent", threadId: "t", link: "", interviewer: "", messageId: "s1",
+    };
+    vi.mocked(collectSentSubmissions).mockResolvedValueOnce({
+      rows: [sentRow], raw: [], processed: [{ messageId: "s1", threadId: "t" }], submissions: [], examined: 1,
+    });
+    const r = await runPoll({ analyze: vi.fn() });
+    expect(r.submissions).toBe(1);
+    expect(vi.mocked(appendRows).mock.calls[0][1]).toEqual([sentRow]);
+    expect(vi.mocked(notifyDigest).mock.calls[0][1]).toEqual([]);
+    expect(vi.mocked(setLastChecked)).toHaveBeenCalled();
+  });
+
+  it("a sent-scan failure holds the watermark but keeps inbound work", async () => {
+    vi.mocked(getLastChecked).mockResolvedValue(WATERMARK);
+    vi.mocked(getProcessedIds).mockResolvedValue({ messageIds: new Set(), legacyThreadIds: new Set() });
+    feed([]);
+    vi.mocked(collectSentSubmissions).mockRejectedValueOnce(new Error("gmail down"));
+    const r = await runPoll({ analyze: vi.fn() });
+    expect(r.failed).toBe(1);
+    expect(vi.mocked(setLastChecked)).not.toHaveBeenCalled();
   });
 });

@@ -331,6 +331,19 @@ export async function readRawEmails(auth: OAuth2Client): Promise<Map<string, Raw
   return map;
 }
 
+/** messageId → sender domain from the Raw cache (columns A:E only — cheap
+ *  enough for the hourly poll, unlike reading every cached body). */
+export async function readRawSenderDomains(auth: OAuth2Client): Promise<Map<string, string>> {
+  const sheets = sheetsClient(auth);
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: config.sheets.spreadsheetId,
+    range: `${config.sheets.rawSheet}!A:E`,
+  });
+  const map = new Map<string, string>();
+  for (const r of res.data.values ?? []) if (r[0] && r[4]) map.set(r[0], String(r[4]).toLowerCase());
+  return map;
+}
+
 /** Batched cell updates in one API call — used by the repair tools. */
 export async function batchUpdateValues(
   auth: OAuth2Client,

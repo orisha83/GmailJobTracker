@@ -21,6 +21,9 @@ export interface FetchedMessage {
   /** Candidate URLs found in the email (anchors + plain-text), filtered of junk.
    *  The AI picks the best job/careers link from these. */
   links: string[];
+  /** Recipient addresses (To + Cc), lowercased — used to match the candidate's
+   *  SENT mail to a tracked company. Optional: inbound code never needs it. */
+  to?: string[];
   /** True if this is one of our own digest emails (carries the X-Job-Tracker
    *  header) — never treat it as job mail, else we'd loop on our own alerts. */
   isSelfNotification: boolean;
@@ -215,6 +218,12 @@ export async function fetchMessage(
         headers.find((h) => h.name?.toLowerCase() === "date")?.value ?? Date.now(),
       ).toISOString();
 
+  const to = ["to", "cc"]
+    .map((n) => headers.find((h) => h.name?.toLowerCase() === n)?.value ?? "")
+    .join(",")
+    .match(/[^\s<>,;"']+@[^\s<>,;"']+/g)
+    ?.map((a) => a.toLowerCase()) ?? [];
+
   const isSelfNotification =
     headers.find((h) => h.name?.toLowerCase() === NOTIFICATION_HEADER.toLowerCase())?.value ===
     NOTIFICATION_HEADER_VALUE;
@@ -228,6 +237,7 @@ export async function fetchMessage(
     senderName,
     senderDomain,
     links: extractLinks(msg.payload),
+    to,
     isSelfNotification,
   };
 }

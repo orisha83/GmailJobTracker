@@ -23,7 +23,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  let body: { since?: string; until?: string; dryRun?: boolean; limit?: number; cursor?: string } = {};
+  let body: {
+    since?: string;
+    until?: string;
+    dryRun?: boolean;
+    limit?: number;
+    cursor?: string;
+    sent?: boolean;
+  } = {};
   try {
     body = await request.json();
   } catch {
@@ -40,6 +47,7 @@ export async function POST(request: NextRequest) {
       dryRun: body.dryRun ?? true,
       limit: body.limit,
       cursor: body.cursor,
+      sent: body.sent === true,
     });
     return NextResponse.json({ ok: true, ...report });
   } catch (err) {

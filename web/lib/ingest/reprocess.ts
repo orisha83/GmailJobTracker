@@ -196,6 +196,13 @@ export async function runReprocess(
   const sheet = config.sheets.dataSheet;
 
   for (const row of rows) {
+    // Your own sent submissions and manually added updates aren't company
+    // mail — the inbound classifier would misread them (and manual rows have
+    // no email at all).
+    if (row.source === "sent" || row.messageId.startsWith("manual-")) {
+      report.rowsExamined++;
+      continue;
+    }
     const raw = await resolveRaw(auth, row, rawByMessageId, recovered);
     if (!raw) {
       report.rowsExamined++;

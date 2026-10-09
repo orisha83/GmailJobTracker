@@ -13,12 +13,16 @@ vi.mock("@/lib/google/sheets", () => ({
   ensureSheets: vi.fn(),
   readRows: vi.fn(),
   readRawEmails: vi.fn(async () => new Map()),
+  readRawSenderDomains: vi.fn(async () => new Map()),
   appendRows: vi.fn(),
   appendRawEmails: vi.fn(),
   markProcessedBatch: vi.fn(),
 }));
 
+vi.mock("@/lib/ingest/sent", () => ({ collectSentSubmissions: vi.fn() }));
+
 import { runRescan } from "./rescan";
+import { collectSentSubmissions } from "@/lib/ingest/sent";
 import { fetchMessage, searchMessagesPage } from "@/lib/google/gmail";
 import { appendRows, markProcessedBatch, readRawEmails, readRows } from "@/lib/google/sheets";
 
@@ -133,5 +137,18 @@ describe("runRescan", () => {
 
   it("rejects a malformed date", async () => {
     await expect(runRescan({ since: "June" }, { analyze: vi.fn() })).rejects.toThrow(/Invalid date/);
+  });
+});
+
+describe("runRescan — sent mode", () => {
+  it("dry run lists submissions without writing", async () => {
+    vi.mocked(collectSentSubmissions).mockResolvedValue({
+      rows: [{} as never], raw: [], processed: [], examined: 3,
+      submissions: [{ date: "2026-10-06", company: "mPrest", subject: "Re: Home Assignment" }],
+    });
+    const r = await runRescan({ since: "2026-06-01", sent: true }, { analyze: vi.fn() });
+    expect(r.added).toEqual([expect.objectContaining({ company: "mPrest", category: "Progress", source: "sent" })]);
+    expect(appendRows).not.toHaveBeenCalled();
+    expect(vi.mocked(collectSentSubmissions).mock.calls[0][1].timeBound).toBe("after:2026/06/01");
   });
 });

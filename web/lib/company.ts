@@ -135,6 +135,19 @@ const titleize = (s: string) =>
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
     .join(" ");
 
+/** An ATS relay or a mailbox provider — the domain says nothing about the employer. */
+export function isRelayDomain(domain: string): boolean {
+  const d = (domain || "").toLowerCase().trim().replace(/^www\./, "");
+  return !d || FREEMAIL_DOMAINS.has(d) || ATS_DOMAINS.some((a) => d === a || d.endsWith(`.${a}`));
+}
+
+/** "careers.monday.com" → "monday.com", "mail.harel-ins.co.il" → "harel-ins.co.il". */
+export function registrableDomain(domain: string): string {
+  const labels = (domain || "").toLowerCase().trim().split(".").filter(Boolean);
+  const keep = labels.length > 2 && SECOND_LEVEL.has(labels[labels.length - 2]) ? 3 : 2;
+  return labels.slice(-keep).join(".");
+}
+
 /**
  * The employer a sender domain points at, as a display name, or "" when the
  * domain can't tell (freemail, a bare ATS relay). ATS relays yield their

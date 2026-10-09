@@ -22,6 +22,7 @@ Based on [PRD.md](PRD.md) and [StackDecision.md](StackDecision.md). Single-user 
       /reprocess         POST → re-classify cached emails, diff-first (CRON_SECRET)
     /jobs                GET  → read tracked rows + manual merges (dashboard data)
     /jobs/[messageId]    PATCH→ update pipeline status in Sheet ("Auto" clears an override)
+    /rows                POST → manual update on a card (off-email events: "passed — next round")
     /rows/[row]          PATCH→ per-email edit: hide/unhide, move to another company
     /aliases             GET/POST/DELETE → manual company merges (merge / undo)
   /(dashboard)
@@ -30,6 +31,7 @@ Based on [PRD.md](PRD.md) and [StackDecision.md](StackDecision.md). Single-user 
   positions.ts           pure position derivation (grouping, aliases, stage-aware status)
   company.ts             company identity: canonical keys, ATS-aware domains, known-company snapping
   html.ts                HTML email → text (bodies are classified as text, never markup)
+  manual.ts              manual-update presets → validated Tracker row (pure)
   google/
     auth.ts              OAuth client factory, token load/refresh
     gmail.ts             search messages, fetch message, list thread messages
@@ -40,10 +42,13 @@ Based on [PRD.md](PRD.md) and [StackDecision.md](StackDecision.md). Single-user 
     claude.ts            Claude implementation (optional swap)
   classify/
     heuristics.ts        rule-first ack/rejection classifier + noise gate
+    sent.ts              YOUR sent mail: did it submit a home assignment? (rules only)
   ingest/
     poll.ts              orchestrates: gmail → rules/AI → sheets + notify
     backfill.ts          one-time repair (per-thread era → per-message)
     reprocess.ts         offline re-classification over the Raw cache
+    rescan.ts            recover past mail with no Tracker row (--sent: your submissions)
+    sent.ts              sent-mail scan: submissions → Progress rows on their application
   notify.ts              digest email to self
   config.ts              env loading (secrets, sheet id, search query)
 /scripts
@@ -74,6 +79,9 @@ Based on [PRD.md](PRD.md) and [StackDecision.md](StackDecision.md). Single-user 
                         queue Tracker row (+ digest alert for Invitation/Offer)
         queue Raw cache entry (subject/body — enables offline re-classification)
         queue processed {messageId, threadId}
+  → sent-mail scan (in:sent, same time bound): a message in a tracked thread, or
+    to a tracked company's own domain, that submits a home assignment → a
+    "Progress / Assignment submitted" row (source "sent"); replies are ignored
   → flush: appendRows → appendRawEmails → markProcessedBatch → notifyDigest
   → advance watermark only on a clean run (no deferred/failed)
 ```
@@ -85,7 +93,8 @@ Based on [PRD.md](PRD.md) and [StackDecision.md](StackDecision.md). Single-user 
     "Armis Security" ≡ "Armis"); apply manual aliases; fuzzy-merge spelling
     variants; group by company (segments split at rejections)
   → derivePositionState(): terminal → manual-on-latest → Offer → latest
-    Invitation step → "Interview scheduled" → Applied   (stage-aware; an ack
+    interview-stage step (Invitation, or Progress = assignment submitted /
+    passed a stage) → "Interview scheduled" → Applied   (stage-aware; an ack
     can never downgrade an interview — see PRD §8 derivation table)
 ```
 
@@ -121,6 +130,8 @@ Hidden tab "Meta": scan watermark (B1) + notification state (B2:B3).
 
 Hidden tab "Aliases" (A:D): `fromKey | toKey | fromName | mergedAt` — manual company merges from the dashboard. Applied at grouping time (never rewrites rows), so a merge also catches future mail for that company and is undone by deleting the alias.
 
+Categories: Invitation · Applied · Rejection · Offer · Other, plus **Progress** — a milestone on the candidate's side (assignment submitted, passed a stage, interview done) that keeps the position in the interview stage while waiting on the company. Sources: `rule` · `ai` · `sent` (your submission) · `manual` (added on the dashboard; MessageID `manual-<uuid>`, threadId = the card's thread). Reprocess skips sent and manual rows.
+
 Per-email manual edits write the row itself: Status `Hidden` drops the email from every card (listed under the dashboard's "Hidden" filter for undo); a move writes Company/CompanyKey and sets Source to `manual`, which reprocess never overrides.
 
 ## 4. The `EmailAnalyzer` interface (swap point)
@@ -154,6 +165,7 @@ Default implementation: `GeminiAnalyzer` (gemini-2.5-flash-lite, free tier, `res
 | `/api/admin/reprocess` | POST | Re-classify cached emails (dry-run default) | `CRON_SECRET` header |
 | `/api/jobs` | GET | List tracked rows | session/local |
 | `/api/jobs/[messageId]` | PATCH | Update status (messageId, legacy threadId ok) | session/local |
+| `/api/rows` | POST | Add a manual update to a card (validated presets) | session/local |
 | `/api/rows/[row]` | PATCH | Hide/unhide or move one email (guarded by threadId + received) | session/local |
 | `/api/aliases` | GET/POST/DELETE | List / add / undo manual company merges | session/local |
 

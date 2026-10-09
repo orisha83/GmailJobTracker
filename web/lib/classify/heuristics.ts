@@ -52,7 +52,7 @@ const APPLICATION_STATUS_RE =
 /** Subject + body with typographic apostrophes straightened: templates write
  *  "won’t" / "we’ve", and every rule spells them with a plain "'". Without this
  *  Playtika's and Cloudinary's rejections slipped through as noise. */
-const textOf = (msg: FetchedMessage) => `${msg.subject}\n${msg.body}`.replace(/[’‘ʼ`´]/g, "'");
+export const textOf = (msg: Pick<FetchedMessage, "subject" | "body">) => `${msg.subject}\n${msg.body}`.replace(/[’‘ʼ`´]/g, "'");
 
 export function looksLikeInvitation(msg: FetchedMessage): boolean {
   const text = textOf(msg);

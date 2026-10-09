@@ -17,6 +17,7 @@ import {
   getLastChecked,
   getProcessedIds,
   markProcessedBatch,
+  readRawSenderDomains,
   readRows,
   setLastChecked,
   type NewJobRow,
@@ -29,6 +30,7 @@ import { guardOfferDowngrade, stripSelfInterviewer, type EmailAnalyzer } from "@
 import { getAnalyzer } from "@/lib/ai";
 import { classifyHeuristically, looksLikeInvitation } from "@/lib/classify/heuristics";
 import { knownCompanies, snapToKnown } from "@/lib/company";
+import { collectSentSubmissions } from "@/lib/ingest/sent";
 
 export interface PollResult {
   scanned: number; // messages handled this run (rule + ai)
@@ -41,6 +43,7 @@ export interface PollResult {
   irrelevant: number; // not job-related (model said so, or rule-skipped as noise)
   failed: number; // analyzer returned null (transient — retried next run)
   deferred: number; // left for the next run (AI budget reached)
+  submissions: number; // home assignments you sent, logged from your Sent mail
   query: string;
 }
 
@@ -79,6 +82,7 @@ export async function runPoll(analyzer: EmailAnalyzer = getAnalyzer()): Promise<
     irrelevant: 0,
     failed: 0,
     deferred: 0,
+    submissions: 0,
     query,
   };
 
@@ -88,7 +92,8 @@ export async function runPoll(analyzer: EmailAnalyzer = getAnalyzer()): Promise<
   const processed = await getProcessedIds(auth);
   // Companies already tracked — new mail that names one (in the subject or via
   // the sender domain) joins that card instead of opening a duplicate.
-  const known = knownCompanies(await readRows(auth));
+  const existingRows = await readRows(auth);
+  const known = knownCompanies(existingRows);
 
   // Batch writes + alerts; flush once at the end (Sheets write-quota friendly).
   const rowsToAppend: NewJobRow[] = [];
@@ -224,6 +229,25 @@ export async function runPoll(analyzer: EmailAnalyzer = getAnalyzer()): Promise<
     }
 
     processedIds.push({ messageId, threadId });
+  }
+
+  // Your own sent mail: a submitted home assignment moves its application on.
+  // A failure here mustn't lose the inbound work above — count it as failed so
+  // the watermark holds and the window is retried next run.
+  try {
+    const sent = await collectSentSubmissions(auth, {
+      timeBound,
+      rows: existingRows,
+      senderDomains: await readRawSenderDomains(auth),
+      processedIds: processed.messageIds,
+    });
+    rowsToAppend.push(...sent.rows);
+    rawToAppend.push(...sent.raw);
+    processedIds.push(...sent.processed);
+    result.submissions = sent.rows.length;
+  } catch (err) {
+    console.error("Sent-mail scan failed:", err);
+    result.failed++;
   }
 
   // Flush rows first, then processed markers (never mark processed unsaved), then alerts.

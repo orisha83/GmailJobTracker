@@ -20,6 +20,7 @@ import {
   ensureSheets,
   markProcessedBatch,
   readRawEmails,
+  readRawSenderDomains,
   readRows,
   type NewJobRow,
   type ProcessedEntry,
@@ -30,12 +31,13 @@ import { guardOfferDowngrade, stripSelfInterviewer, type EmailAnalyzer } from "@
 import { getAnalyzer } from "@/lib/ai";
 import { groupKeyFor, knownCompanies, snapToKnown } from "@/lib/company";
 import { config } from "@/lib/config";
+import { collectSentSubmissions } from "@/lib/ingest/sent";
 
 export interface RescanItem {
   date: string;
   company: string;
   category: string;
-  source: "rule" | "ai";
+  source: "rule" | "ai" | "sent";
   subject: string;
 }
 
@@ -61,34 +63,8 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-/** "YYYY-MM-DD" or "YYYY/MM/DD" → Gmail's "YYYY/MM/DD". */
-function gmailDate(d: string): string {
-  const m = (d || "").match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
-  if (!m) throw new Error(`Invalid date "${d}" — use YYYY-MM-DD`);
-  return `${m[1]}/${m[2]}/${m[3]}`;
-}
-
-export async function runRescan(
-  opts: { since: string; until?: string; dryRun?: boolean; limit?: number; cursor?: string; maxPages?: number },
-  analyzer: EmailAnalyzer = getAnalyzer(),
-): Promise<RescanReport> {
-  const dryRun = opts.dryRun ?? true;
-  const limit = opts.limit ?? config.ingest.maxPerRun;
-  const maxPages = opts.maxPages ?? 1; // bounds Gmail fetches per invocation (≈25s at the fetch gap)
-  const query =
-    `${config.ingest.searchQuery} after:${gmailDate(opts.since)}` +
-    (opts.until ? ` before:${gmailDate(opts.until)}` : "") +
-    " -from:me";
-
-  const auth = makeAuthedClient();
-  if (!dryRun) await ensureSheets(auth);
-  const rows = await readRows(auth);
-  const known = knownCompanies(rows);
-  const trackedIds = new Set(rows.map((r) => r.messageId).filter(Boolean));
-  // Pre-migration rows have no messageId: match them by thread + received day.
-  const legacy = new Set(rows.filter((r) => !r.messageId).map((r) => `${r.threadId}|${r.received.slice(0, 10)}`));
-
-  const report: RescanReport = {
+function emptyReport(dryRun: boolean): RescanReport {
+  return {
     searched: 0,
     alreadyTracked: 0,
     added: [],
@@ -100,6 +76,79 @@ export async function runRescan(
     applied: !dryRun,
     done: true,
   };
+}
+
+/** "YYYY-MM-DD" or "YYYY/MM/DD" → Gmail's "YYYY/MM/DD". */
+function gmailDate(d: string): string {
+  const m = (d || "").match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+  if (!m) throw new Error(`Invalid date "${d}" — use YYYY-MM-DD`);
+  return `${m[1]}/${m[2]}/${m[3]}`;
+}
+
+/**
+ * `sent: true` walks YOUR sent mail instead: home-assignment submissions in
+ * tracked conversations (or to a tracked company's domain) are logged on
+ * their application. Rules only; one invocation covers the whole range.
+ */
+async function rescanSent(
+  opts: { since: string; until?: string; dryRun: boolean },
+  report: RescanReport,
+): Promise<RescanReport> {
+  const auth = makeAuthedClient();
+  if (!opts.dryRun) await ensureSheets(auth);
+  const rows = await readRows(auth);
+  const scan = await collectSentSubmissions(auth, {
+    timeBound: `after:${gmailDate(opts.since)}` + (opts.until ? ` before:${gmailDate(opts.until)}` : ""),
+    rows,
+    senderDomains: await readRawSenderDomains(auth),
+    // Only mail that already has a row is settled; replies are re-checked (cheap, rules only).
+    processedIds: new Set(rows.map((r) => r.messageId).filter(Boolean)),
+    gapMs: FETCH_GAP_MS,
+  });
+  report.searched = scan.examined;
+  report.added = scan.submissions.map((s) => ({ ...s, category: "Progress", source: "sent" as const }));
+  if (!opts.dryRun) {
+    await appendRows(auth, scan.rows);
+    await appendRawEmails(auth, scan.raw);
+    await markProcessedBatch(auth, scan.processed);
+  }
+  return report;
+}
+
+export async function runRescan(
+  opts: {
+    since: string;
+    until?: string;
+    dryRun?: boolean;
+    limit?: number;
+    cursor?: string;
+    maxPages?: number;
+    sent?: boolean;
+  },
+  analyzer: EmailAnalyzer = getAnalyzer(),
+): Promise<RescanReport> {
+  const dryRun = opts.dryRun ?? true;
+  const limit = opts.limit ?? config.ingest.maxPerRun;
+  const maxPages = opts.maxPages ?? 1; // bounds Gmail fetches per invocation (≈25s at the fetch gap)
+  const query =
+    `${config.ingest.searchQuery} after:${gmailDate(opts.since)}` +
+    (opts.until ? ` before:${gmailDate(opts.until)}` : "") +
+    " -from:me";
+
+  if (opts.sent) {
+    gmailDate(opts.since); // validate before any I/O
+    return rescanSent({ since: opts.since, until: opts.until, dryRun }, emptyReport(dryRun));
+  }
+
+  const auth = makeAuthedClient();
+  if (!dryRun) await ensureSheets(auth);
+  const rows = await readRows(auth);
+  const known = knownCompanies(rows);
+  const trackedIds = new Set(rows.map((r) => r.messageId).filter(Boolean));
+  // Pre-migration rows have no messageId: match them by thread + received day.
+  const legacy = new Set(rows.filter((r) => !r.messageId).map((r) => `${r.threadId}|${r.received.slice(0, 10)}`));
+
+  const report = emptyReport(dryRun);
   // ATS systems re-send identical acks (one apply → 6 copies); keep one —
   // across runs too, so a second rescan never adds the copies it skipped.
   const dupKeyOf = (key: string, category: string, subject: string, received: string) =>

@@ -7,6 +7,7 @@
  */
 import { useState } from "react";
 import type { Alias, Job, Position } from "@/lib/positions";
+import { CUSTOM_STAGES, MANUAL_KINDS, type ManualKind } from "@/lib/manual";
 
 export interface CompanyOption {
   key: string;
@@ -21,10 +22,13 @@ function fmtShort(iso: string): string {
 
 const CATEGORY_DOT: Record<string, string> = {
   Invitation: "bg-emerald-500",
+  Progress: "bg-indigo-500",
   Applied: "bg-sky-500",
   Offer: "bg-violet-500",
   Rejection: "bg-rose-500",
 };
+
+export const isManualEntry = (j: Job) => j.messageId.startsWith("manual-");
 
 export const gmailUrl = (j: Job) => `https://mail.google.com/mail/u/0/#all/${j.threadId || j.messageId}`;
 
@@ -184,70 +188,77 @@ function EmailItem({
           />
           <span className="font-medium text-slate-800">{job.step || job.category || "—"}</span>
           <span className="text-xs text-slate-400">{fmtShort(job.received)}</span>
-          {job.company && <span className="truncate text-xs text-slate-400">· as “{job.company}”</span>}
+          {isManualEntry(job) ? (
+            <span className="rounded bg-slate-200 px-1.5 text-[11px] text-slate-600">Added manually</span>
+          ) : job.source === "sent" ? (
+            <span className="rounded bg-indigo-100 px-1.5 text-[11px] text-indigo-700">You sent</span>
+          ) : (
+            job.company && <span className="truncate text-xs text-slate-400">· as “{job.company}”</span>
+          )}
         </div>
         {job.summary && <p className="mt-0.5 line-clamp-2 text-slate-500">{job.summary}</p>}
       </div>
       <div className="flex shrink-0 flex-wrap items-center gap-2">
-        <a
-          href={gmailUrl(job)}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="rounded-md px-2 py-2 text-xs text-slate-500 hover:bg-slate-100 hover:text-slate-800 sm:py-1"
-        >
-          Open in Gmail ↗
-        </a>
-        {editable && (
-          <>
-            {moving ? (
-              <select
-                autoFocus
-                aria-label="Move this email to company"
-                disabled={saving}
-                value=""
-                onBlur={() => setMoving(false)}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setMoving(false);
-                  if (!v) return;
-                  const name =
-                    v === NEW_COMPANY
-                      ? (prompt("Company name for this email:") ?? "").trim()
-                      : (companies.find((c) => c.key === v)?.name ?? "");
-                  if (name) onMove(job, name);
-                }}
-                className="rounded-md border border-slate-300 bg-white px-2 py-2 text-xs text-slate-700 sm:py-1"
-              >
-                <option value="">Move to…</option>
-                <option value={NEW_COMPANY}>+ New company…</option>
-                {companies
-                  .filter((c) => c.key !== currentKey)
-                  .map((c) => (
-                    <option key={c.key} value={c.key}>
-                      {c.name}
-                    </option>
-                  ))}
-              </select>
-            ) : (
-              <button
-                type="button"
-                disabled={saving}
-                onClick={() => setMoving(true)}
-                className="rounded-md border border-slate-300 bg-white px-2 py-2 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-50 sm:py-1"
-              >
-                Move…
-              </button>
-            )}
+        {!isManualEntry(job) && (
+          <a
+            href={gmailUrl(job)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="rounded-md px-2 py-2 text-xs text-slate-500 hover:bg-slate-100 hover:text-slate-800 sm:py-1"
+          >
+            Open in Gmail ↗
+          </a>
+        )}
+        {editable && !isManualEntry(job) &&
+          (moving ? (
+            <select
+              autoFocus
+              aria-label="Move this email to company"
+              disabled={saving}
+              value=""
+              onBlur={() => setMoving(false)}
+              onChange={(e) => {
+                const v = e.target.value;
+                setMoving(false);
+                if (!v) return;
+                const name =
+                  v === NEW_COMPANY
+                    ? (prompt("Company name for this email:") ?? "").trim()
+                    : (companies.find((c) => c.key === v)?.name ?? "");
+                if (name) onMove(job, name);
+              }}
+              className="rounded-md border border-slate-300 bg-white px-2 py-2 text-xs text-slate-700 sm:py-1"
+            >
+              <option value="">Move to…</option>
+              <option value={NEW_COMPANY}>+ New company…</option>
+              {companies
+                .filter((c) => c.key !== currentKey)
+                .map((c) => (
+                  <option key={c.key} value={c.key}>
+                    {c.name}
+                  </option>
+                ))}
+            </select>
+          ) : (
             <button
               type="button"
               disabled={saving}
-              onClick={() => onHide(job)}
-              title="Not job mail / duplicate — remove from the card"
+              onClick={() => setMoving(true)}
               className="rounded-md border border-slate-300 bg-white px-2 py-2 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-50 sm:py-1"
             >
-              {saving ? "Saving…" : "Hide"}
+              Move…
             </button>
-          </>
+          ))}
+        {editable && (
+          <button
+            type="button"
+            disabled={saving}
+            onClick={() => onHide(job)}
+            title="Not job mail / duplicate / mistaken entry — remove from the card"
+            className="rounded-md border border-slate-300 bg-white px-2 py-2 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-50 sm:py-1"
+          >
+            {saving ? "Saving…" : "Hide"}
+          </button>
         )}
       </div>
     </li>
@@ -315,5 +326,197 @@ export function HiddenList({
         ))}
     </ul>
     </>
+  );
+}
+
+export interface ManualUpdate {
+  kind: ManualKind;
+  text?: string;
+  stage?: string;
+  received: string;
+  interviewDateTime?: string;
+  interviewer?: string;
+  note?: string;
+}
+
+const pad = (n: number) => String(n).padStart(2, "0");
+const localDate = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+
+/** "When" for an update: today keeps the current time (so it sorts as the
+ *  newest event); a past day is recorded at noon local time. */
+function receivedFor(day: string): string {
+  const now = new Date();
+  if (day === localDate(now)) return now.toISOString();
+  const [y, m, d] = day.split("-").map(Number);
+  return new Date(y, m - 1, d, 12, 0).toISOString();
+}
+
+const inputCls =
+  "w-full rounded-md border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 focus:border-slate-400 focus:outline-none sm:py-1.5";
+
+/** Record something that happened off-email on this application. */
+export function AddUpdateForm({
+  position,
+  onSave,
+  onCancel,
+}: {
+  position: Position;
+  onSave: (p: Position, u: ManualUpdate) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [kind, setKind] = useState<ManualKind>("passed");
+  const [text, setText] = useState("");
+  const [stage, setStage] = useState("progress");
+  const [day, setDay] = useState(localDate(new Date()));
+  const [interviewAt, setInterviewAt] = useState("");
+  const [interviewer, setInterviewer] = useState("");
+  const [note, setNote] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const invalid =
+    (kind === "custom" && !text.trim()) || (kind === "scheduled" && !interviewAt) || !day;
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (invalid || saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await onSave(position, {
+        kind,
+        text: kind === "custom" ? text.trim() : undefined,
+        stage: kind === "custom" ? stage : undefined,
+        received: receivedFor(day),
+        interviewDateTime: kind === "scheduled" ? interviewAt : undefined,
+        interviewer: kind === "scheduled" ? interviewer.trim() || undefined : undefined,
+        note: note.trim() || undefined,
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form
+      onSubmit={submit}
+      className="space-y-3 rounded-lg border border-slate-200 bg-slate-50/60 p-3 text-sm"
+    >
+      <div className="grid gap-3 sm:grid-cols-2">
+        <label className="space-y-1">
+          <span className="text-xs font-medium text-slate-500">What happened</span>
+          <select
+            value={kind}
+            onChange={(e) => setKind(e.target.value as ManualKind)}
+            className={inputCls}
+          >
+            {(Object.keys(MANUAL_KINDS) as ManualKind[]).map((k) => (
+              <option key={k} value={k}>
+                {MANUAL_KINDS[k].label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="space-y-1">
+          <span className="text-xs font-medium text-slate-500">When</span>
+          <input
+            type="date"
+            value={day}
+            max={localDate(new Date())}
+            onChange={(e) => setDay(e.target.value)}
+            className={inputCls}
+          />
+        </label>
+        {kind === "custom" && (
+          <>
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-slate-500">Status text</span>
+              <input
+                value={text}
+                maxLength={60}
+                onChange={(e) => setText(e.target.value)}
+                placeholder="e.g. Spoke with the CEO"
+                className={inputCls}
+              />
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-slate-500">Stage</span>
+              <select value={stage} onChange={(e) => setStage(e.target.value)} className={inputCls}>
+                {Object.keys(CUSTOM_STAGES).map((s) => (
+                  <option key={s} value={s}>
+                    {s === "progress" ? "Interview stage" : s === "applied" ? "Applied" : "Other"}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </>
+        )}
+        {kind === "scheduled" && (
+          <>
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-slate-500">Interview date &amp; time</span>
+              <input
+                type="datetime-local"
+                value={interviewAt}
+                onChange={(e) => setInterviewAt(e.target.value)}
+                className={inputCls}
+              />
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-slate-500">Interviewer (optional)</span>
+              <input
+                value={interviewer}
+                maxLength={80}
+                onChange={(e) => setInterviewer(e.target.value)}
+                className={inputCls}
+              />
+            </label>
+          </>
+        )}
+      </div>
+      <label className="block space-y-1">
+        <span className="text-xs font-medium text-slate-500">Note (optional)</span>
+        <input
+          value={note}
+          maxLength={300}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="e.g. Recruiter called — they liked the assignment"
+          className={inputCls}
+        />
+      </label>
+      {error && <p className="text-sm text-rose-700">{error}</p>}
+      <div className="flex gap-2">
+        <button
+          type="submit"
+          disabled={invalid || saving}
+          className="rounded-md bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50 sm:py-1.5"
+        >
+          {saving ? "Saving…" : "Add update"}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={saving}
+          className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 sm:py-1.5"
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
+/** "+ Add update" toggle, sits next to the emails toggle. */
+export function AddUpdateToggle({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={open}
+      className="rounded-md px-2 py-2 text-sm text-slate-500 hover:bg-slate-100 hover:text-slate-800 sm:py-1 sm:text-xs"
+    >
+      {open ? "× Close" : "+ Add update"}
+    </button>
   );
 }

@@ -67,7 +67,7 @@ export async function runBackfill(
   // Every thread we know about: tracked rows + processed markers (the latter
   // covers noise-marked threads that never produced a row).
   const threadIds = new Set<string>();
-  for (const r of rows) if (r.threadId) threadIds.add(r.threadId);
+  for (const r of rows) if (r.threadId && !r.threadId.startsWith("manual-")) threadIds.add(r.threadId);
   for (const e of processed.legacyThreadIds) threadIds.add(e);
   const allThreads = [...threadIds].sort();
 

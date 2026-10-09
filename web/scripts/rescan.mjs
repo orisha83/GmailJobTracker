@@ -5,6 +5,7 @@
 //   node --env-file=.env.local scripts/rescan.mjs --since 2026-06-01            # dry run
 //   node --env-file=.env.local scripts/rescan.mjs --since 2026-06-01 --apply    # append rows
 //   ... --until 2026-09-01   --base https://your.app   --limit 15
+//   ... --sent    # your SENT mail: log home-assignment submissions (rules only)
 //
 // Loops over /api/admin/rescan until the whole range is covered.
 
@@ -15,6 +16,8 @@ const base = arg("--base") ?? "http://localhost:3000";
 const since = arg("--since");
 const until = arg("--until");
 const limit = arg("--limit") ? Number(arg("--limit")) : undefined;
+// --sent: walk YOUR sent mail for home-assignment submissions instead.
+const sent = args.includes("--sent");
 let cursor = arg("--cursor");
 
 const secret = process.env.CRON_SECRET;
@@ -35,7 +38,7 @@ for (let pass = 1; ; pass++) {
   const res = await fetch(`${base}/api/admin/rescan`, {
     method: "POST",
     headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ since, until, dryRun: !apply, limit, cursor }),
+    body: JSON.stringify({ since, until, dryRun: !apply, limit, cursor, sent }),
   });
   const report = await res.json();
   // Gmail's per-minute quota: nothing was written for this pass — wait, retry it.

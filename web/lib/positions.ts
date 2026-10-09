@@ -64,6 +64,7 @@ export interface Position {
   status: string; // stage-aware derived status (or manual override)
   category: string; // category backing the status — drives color
   statusSource: "manual" | "derived";
+  statusDate: string; // when the status-backing email/update arrived
   summary: string;
   lastUpdate: string;
   nextInterview: string;
@@ -178,6 +179,11 @@ export function pickInterview(jobs: Job[]): string {
   return past[0]?.s ?? "";
 }
 
+// Interview stage: the company asked for something (Invitation) or the
+// candidate cleared a step and is waiting on them (Progress).
+export const isInterviewStage = (category: string) =>
+  norm(category) === "invitation" || norm(category) === "progress";
+
 const REJECTED_STATUS = new Set(["rejected", "withdrawn", "archived"]);
 // A rejection (or a manual reject/withdraw/archive) closes a position; any later
 // activity begins a fresh one. Offer is deliberately NOT a boundary.
@@ -197,15 +203,19 @@ const isManualOverride = (j: Job) =>
  *  2. Manual override on the LATEST row → it wins. (A newer email creates a
  *     newer row without the override, so newer evidence supersedes it.)
  *  3. Any genuine Offer row → Offer.
- *  4. Any Invitation row → the latest invitation's step. Acks/updates arriving
- *     later can never downgrade an interview stage back to "Applied".
+ *  4. Any interview-stage row (Invitation, or Progress — a milestone on the
+ *     candidate's side: assignment submitted, passed a stage) → the latest
+ *     one's step. Acks/updates arriving later can never downgrade an
+ *     interview stage back to "Applied".
  *  5. An upcoming interview time without an Invitation row → "Interview scheduled".
  *  6. Else the latest row's status/step (ack-only positions → "Applied").
+ * statusDate = when the row backing the status arrived (shown under the badge).
  */
 export function derivePositionState(jobs: Job[]): {
   status: string;
   category: string;
   statusSource: "manual" | "derived";
+  statusDate: string;
 } {
   const byRecent = [...jobs].sort((a, b) => (b.received || "").localeCompare(a.received || ""));
   const latest = byRecent[0];
@@ -217,6 +227,7 @@ export function derivePositionState(jobs: Job[]): {
       status,
       category: norm(status) === "rejected" ? "Rejection" : "Other",
       statusSource: isManualOverride(terminal) ? "manual" : "derived",
+      statusDate: terminal.received,
     };
   }
 
@@ -230,31 +241,46 @@ export function derivePositionState(jobs: Job[]): {
       status: latest.status,
       category: manualCategory[norm(latest.status)] ?? "Other",
       statusSource: "manual",
+      statusDate: latest.received,
     };
   }
 
   const offer = byRecent.find((j) => norm(j.category) === "offer");
   if (offer) {
-    return { status: offer.step || "Offer", category: "Offer", statusSource: "derived" };
-  }
-
-  const invitation = byRecent.find((j) => norm(j.category) === "invitation");
-  if (invitation) {
     return {
-      status: invitation.step || "Interview",
-      category: "Invitation",
+      status: offer.step || "Offer",
+      category: "Offer",
       statusSource: "derived",
+      statusDate: offer.received,
     };
   }
 
-  if (earliestUpcoming(jobs)) {
-    return { status: "Interview scheduled", category: "Invitation", statusSource: "derived" };
+  const stage = byRecent.find((j) => isInterviewStage(j.category));
+  if (stage) {
+    const progress = norm(stage.category) === "progress";
+    return {
+      status: stage.step || (progress ? "In progress" : "Interview"),
+      category: progress ? "Progress" : "Invitation",
+      statusSource: "derived",
+      statusDate: stage.received,
+    };
+  }
+
+  const upcoming = earliestUpcoming(jobs);
+  if (upcoming) {
+    return {
+      status: "Interview scheduled",
+      category: "Invitation",
+      statusSource: "derived",
+      statusDate: jobs.find((j) => j.interviewDateTime === upcoming)?.received ?? "",
+    };
   }
 
   return {
     status: latest?.status || latest?.step || "Applied",
     category: latest?.category || "Other",
     statusSource: "derived",
+    statusDate: latest?.received ?? "",
   };
 }
 
@@ -282,6 +308,7 @@ export function makePosition(
     status: derived.status,
     category: derived.category,
     statusSource: derived.statusSource,
+    statusDate: derived.statusDate,
     summary: latest?.summary || "",
     lastUpdate,
     nextInterview,
@@ -458,7 +485,7 @@ export function stageRank(p: Position): number {
   if (isTerminal(p) && norm(p.category) !== "offer") return 5;
   if (norm(p.category) === "offer") return 0;
   if (p.nextInterview && wallClockMs(p.nextInterview) >= nowWallClockMs()) return 1;
-  if (norm(p.category) === "invitation" || norm(p.status) === "interviewing") return 2;
+  if (isInterviewStage(p.category) || norm(p.status) === "interviewing") return 2;
   if (norm(p.category) === "applied") return 3;
   return 4;
 }

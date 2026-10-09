@@ -437,3 +437,14 @@ it("rulesOnly never calls the AI", async () => {
   expect(analyzer.analyze).not.toHaveBeenCalled();
   expect(report.aiCalls).toBe(0);
 });
+
+it("skips your sent submissions and manual updates", async () => {
+  vi.mocked(readRows).mockResolvedValue([
+    row({ rowNumber: 2, messageId: "s1", source: "sent", category: "Progress", step: "Assignment submitted" }),
+    row({ rowNumber: 3, messageId: "manual-abc", source: "manual", category: "Progress", step: "Passed assignment — next round" }),
+  ]);
+  const report = await runReprocess({ dryRun: true }, spyAnalyzer([]));
+  expect(fetchMessage).not.toHaveBeenCalled();
+  expect(report.changes).toEqual([]);
+  expect(report.rowsExamined).toBe(2);
+});
