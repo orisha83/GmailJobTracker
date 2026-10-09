@@ -19,6 +19,7 @@ import {
   appendRows,
   ensureSheets,
   markProcessedBatch,
+  readRawEmails,
   readRows,
   type NewJobRow,
   type ProcessedEntry,
@@ -27,7 +28,7 @@ import {
 import { classifyHeuristically, looksLikeApplicationMail } from "@/lib/classify/heuristics";
 import { guardOfferDowngrade, stripSelfInterviewer, type EmailAnalyzer } from "@/lib/ai/analyzer";
 import { getAnalyzer } from "@/lib/ai";
-import { knownCompanies, snapToKnown } from "@/lib/company";
+import { groupKeyFor, knownCompanies, snapToKnown } from "@/lib/company";
 import { config } from "@/lib/config";
 
 export interface RescanItem {
@@ -99,8 +100,16 @@ export async function runRescan(
     applied: !dryRun,
     done: true,
   };
-  // ATS systems re-send identical acks (one apply → 6 copies); keep one.
+  // ATS systems re-send identical acks (one apply → 6 copies); keep one —
+  // across runs too, so a second rescan never adds the copies it skipped.
+  const dupKeyOf = (key: string, category: string, subject: string, received: string) =>
+    `${key}|${category}|${subject.trim()}|${received.slice(0, 10)}`;
+  const raw = await readRawEmails(auth);
   const seen = new Set<string>();
+  for (const r of rows) {
+    const subject = raw.get(r.messageId)?.subject;
+    if (subject) seen.add(dupKeyOf(groupKeyFor(r), r.category, subject, r.received));
+  }
   const newRows: NewJobRow[] = [];
   const rawToAppend: RawEmail[] = [];
   const processedIds: ProcessedEntry[] = [];
@@ -174,7 +183,7 @@ export async function runRescan(
       }
 
       const { company, companyKey } = snapToKnown(analysis.company, message, known);
-      const dupKey = `${companyKey}|${analysis.category}|${message.subject.trim()}|${message.date.slice(0, 10)}`;
+      const dupKey = dupKeyOf(companyKey, analysis.category, message.subject, message.date);
       if (seen.has(dupKey)) {
         report.duplicates++;
         continue;

@@ -12,6 +12,7 @@ vi.mock("@/lib/google/gmail", () => ({ searchMessagesPage: vi.fn(), fetchMessage
 vi.mock("@/lib/google/sheets", () => ({
   ensureSheets: vi.fn(),
   readRows: vi.fn(),
+  readRawEmails: vi.fn(async () => new Map()),
   appendRows: vi.fn(),
   appendRawEmails: vi.fn(),
   markProcessedBatch: vi.fn(),
@@ -19,7 +20,7 @@ vi.mock("@/lib/google/sheets", () => ({
 
 import { runRescan } from "./rescan";
 import { fetchMessage, searchMessagesPage } from "@/lib/google/gmail";
-import { appendRows, markProcessedBatch, readRows } from "@/lib/google/sheets";
+import { appendRows, markProcessedBatch, readRawEmails, readRows } from "@/lib/google/sheets";
 
 function fm(partial: Partial<FetchedMessage>): FetchedMessage {
   const id = partial.id ?? "m";
@@ -115,6 +116,19 @@ describe("runRescan", () => {
     const r = await runRescan({ since: "2026-06-01" }, { analyze: vi.fn() });
     expect(r.added).toHaveLength(1);
     expect(r.duplicates).toBe(2);
+  });
+
+  it("never adds a re-sent copy of mail an earlier run already recovered", async () => {
+    vi.mocked(readRows).mockResolvedValue([
+      { messageId: "c1", threadId: "t-c1", received: "2026-07-13T09:00:00.000Z", company: "Acme", companyKey: "acme", category: "Applied" },
+    ] as TrackedJob[]);
+    vi.mocked(readRawEmails).mockResolvedValue(
+      new Map([["c1", { subject: "Thank you for applying to Acme" } as never]]),
+    );
+    feed([fm({ id: "c2", subject: "Thank you for applying to Acme", body: "We received your application.", senderName: "Acme", senderDomain: "acme.com" })]);
+    const r = await runRescan({ since: "2026-06-01" }, { analyze: vi.fn() });
+    expect(r.added).toEqual([]);
+    expect(r.duplicates).toBe(1);
   });
 
   it("rejects a malformed date", async () => {
