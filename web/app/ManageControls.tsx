@@ -55,7 +55,7 @@ export function MergeSelect({
           onMerge(position, target);
         }
       }}
-      className="w-full rounded-md border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 disabled:opacity-50 sm:w-auto sm:py-1 sm:text-xs"
+      className="w-full min-w-0 truncate rounded-md border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 disabled:opacity-50 sm:w-36 sm:py-1 sm:text-xs"
     >
       <option value="">Merge into…</option>
       {targets.map((c) => (
@@ -272,6 +272,11 @@ export function HiddenList({
     );
   }
   return (
+    <>
+    <p className="mb-3 text-sm text-slate-500">
+      Emails removed from their cards with “Hide” (not job mail, or duplicates). They don’t
+      count toward any position’s status. Unhide one to put it back.
+    </p>
     <ul className="divide-y divide-slate-100 rounded-xl border border-slate-200 bg-white shadow-sm">
       {[...jobs]
         .sort((a, b) => (b.received || "").localeCompare(a.received || ""))
@@ -309,5 +314,6 @@ export function HiddenList({
           </li>
         ))}
     </ul>
+    </>
   );
 }

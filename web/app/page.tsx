@@ -89,6 +89,7 @@ function companyDomain(p: Position): string | null {
 }
 
 const SORTS: { key: SortKey; label: string }[] = [
+  { key: "status", label: "Status (interviews first)" },
   { key: "interview", label: "Next interview" },
   { key: "recent", label: "Last activity" },
   { key: "company", label: "Company A–Z" },
@@ -105,7 +106,7 @@ export default function Dashboard() {
   const [filter, setFilter] = useState<Filter>("Active");
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState("");
-  const [sortBy, setSortBy] = useState<SortKey>("interview");
+  const [sortBy, setSortBy] = useState<SortKey>("status");
 
   const load = useCallback(async () => {
     setError(null);
@@ -694,7 +695,7 @@ function OverrideSelect({
       disabled={saving}
       value=""
       onChange={(e) => e.target.value && onChange(position, e.target.value)}
-      className="w-full rounded-md border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 disabled:opacity-50 sm:w-auto sm:py-1 sm:text-xs"
+      className="w-full rounded-md border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 disabled:opacity-50 sm:w-36 sm:py-1 sm:text-xs"
     >
       <option value="">Set status…</option>
       {position.statusSource === "manual" && (

@@ -355,3 +355,25 @@ describe("buildPositions — company identity, merges, hidden emails", () => {
     expect(ps[0].memberKeys.map((m) => m.key).sort()).toEqual(["appflyer", "appsflyer"]);
   });
 });
+
+describe("sortPositions — status (interviews first)", () => {
+  it("offer → upcoming interview (soonest first) → interview stage → applied → closed", async () => {
+    const { sortPositions } = await import("./positions");
+    const ps = buildPositions([
+      job({ messageId: "1", company: "Closed", companyKey: "closed", category: "Rejection", step: "Rejected" }),
+      job({ messageId: "2", company: "Silent", companyKey: "silent", received: "2026-07-05T00:00:00.000Z" }),
+      job({ messageId: "3", company: "Later", companyKey: "later", category: "Invitation", step: "VP interview", interviewDateTime: "2099-02-01T10:00:00" }),
+      job({ messageId: "4", company: "Soon", companyKey: "soon", category: "Invitation", step: "HR screen", interviewDateTime: "2099-01-01T10:00:00" }),
+      job({ messageId: "5", company: "Undated", companyKey: "undated", category: "Invitation", step: "Recruiter call" }),
+      job({ messageId: "6", company: "Offered", companyKey: "offered", category: "Offer", step: "Offer" }),
+    ]);
+    expect(sortPositions(ps, "status").map((p) => p.company)).toEqual([
+      "Offered",
+      "Soon",
+      "Later",
+      "Undated",
+      "Silent",
+      "Closed",
+    ]);
+  });
+});

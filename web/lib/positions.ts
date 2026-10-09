@@ -441,9 +441,33 @@ export function buildPositions(allJobs: Job[], aliasList: Alias[] = []): Positio
   });
 }
 
-export type SortKey = "interview" | "recent" | "company";
+export type SortKey = "status" | "interview" | "recent" | "company";
+
+/**
+ * Pipeline stage for the "status" sort — what needs the candidate's attention
+ * first: 0 offer · 1 upcoming interview · 2 other interview-stage positions ·
+ * 3 applied / no reply · 4 anything else open · 5 closed (rejected/withdrawn).
+ */
+export function stageRank(p: Position): number {
+  if (isTerminal(p) && norm(p.category) !== "offer") return 5;
+  if (norm(p.category) === "offer") return 0;
+  if (p.nextInterview && wallClockMs(p.nextInterview) >= nowWallClockMs()) return 1;
+  if (norm(p.category) === "invitation" || norm(p.status) === "interviewing") return 2;
+  if (norm(p.category) === "applied") return 3;
+  return 4;
+}
+
 export function sortPositions(list: Position[], by: SortKey): Position[] {
   const arr = [...list];
+  if (by === "status") {
+    return arr.sort((a, b) => {
+      const r = stageRank(a) - stageRank(b);
+      if (r) return r;
+      // Upcoming interviews: soonest first. Everything else: latest activity first.
+      if (stageRank(a) === 1) return wallClockMs(a.nextInterview) - wallClockMs(b.nextInterview);
+      return (b.lastUpdate || "").localeCompare(a.lastUpdate || "");
+    });
+  }
   if (by === "company") return arr.sort((a, b) => a.company.localeCompare(b.company));
   if (by === "recent")
     return arr.sort((a, b) => (b.lastUpdate || "").localeCompare(a.lastUpdate || ""));
