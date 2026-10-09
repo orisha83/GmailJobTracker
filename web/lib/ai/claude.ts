@@ -51,7 +51,7 @@ function buildPrompt(input: EmailInput): string {
   const body = (input.body || "").slice(0, MAX_BODY_CHARS);
   return `You track where a candidate's job applications stand. Analyze ONE email (Hebrew or English) and report the candidate's current step for that position.
 
-Set "is_relevant" false for anything not about this candidate's own job applications (newsletters, marketing, job-alert digests, unrelated mail).
+Set "is_relevant" false for anything not about this candidate's own job applications (newsletters, marketing, job-alert digests, unrelated mail) — and for surveys/requests asking the candidate to rate or give feedback on the company's interview/hiring process (no pipeline news).
 
 "company": the HIRING company the candidate applied to — take it from the email body/signature (e.g. "the Product Manager position at Blockaid", "Blockaid Talent Team"), NOT the sender's personal name. A recruiter (a person) often sends on behalf of the company; report the company, not the recruiter. Sender hints — name: "${input.senderName ?? ""}", domain: "${input.senderDomain ?? ""}". Translate to English if Hebrew.
 

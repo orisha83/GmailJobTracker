@@ -385,3 +385,30 @@ describe("rescan follow-ups", () => {
     expect(looksLikeApplicationMail(msg({ subject: "Your Candidacy for Job Opps at Discount Bank", body: "" }))).toBe(true);
   });
 });
+
+describe("feedback surveys are not tracked", () => {
+  it.each([
+    ["Your interview at Nebius: Let us know how we did!", "As you recently interviewed for a position with us, we'd really appreciate your feedback."],
+    ["Candidate Experience Survey from WalkMe", "WalkMe would like feedback on your recent interview experience."],
+    ["How was it?", "Please take a short survey about your recruitment experience."],
+    ["משוב", "נשמח לשמוע את דעתך על תהליך הגיוס"],
+  ])("%s → not relevant", (subject, body) => {
+    const a = classifyHeuristically(msg({ subject, body }));
+    expect(a?.is_relevant).toBe(false);
+  });
+
+  it("a rejection that links a survey is still a rejection", () => {
+    const a = classifyHeuristically(
+      msg({ subject: "Update", body: "Unfortunately we won't be moving forward. Please take a short survey about your experience." }),
+    );
+    expect(a?.category).toBe("Rejection");
+    expect(a?.is_relevant).toBe(true);
+  });
+
+  it("'feedback from your interview' (the company's verdict) is NOT a survey", () => {
+    const a = classifyHeuristically(
+      msg({ subject: "Feedback from your interview", body: "Great feedback from the team — let's schedule the next round. What times work?" }),
+    );
+    expect(a?.is_relevant).not.toBe(false);
+  });
+});

@@ -75,6 +75,17 @@ export function looksLikeApplicationMail(msg: FetchedMessage): boolean {
   return INVITATION_RE.test(text) || APPLICATION_STATUS_RE.test(text) || ACK_RE.test(text);
 }
 
+// Requests for the candidate's feedback on the hiring process ("Let us know how
+// we did", "Candidate Experience Survey"). Deliberately NOT "feedback from your
+// interview" — that's the company's verdict, which can be an invitation.
+const FEEDBACK_SURVEY_RE =
+  /(candidate (?:experience )?survey|experience survey|(?:take|complete|fill (?:out|in)) (?:a |our |this |the )?(?:short |quick |brief )?survey|let us know how we did|how did we do|rate (?:your|the) (?:interview|recruitment|hiring|candidate|application)|(?:feedback|thoughts|opinion) (?:on|about|regarding) (?:your|the|our) (?:recent )?(?:interview(?:ing)?|recruitment|recruiting|hiring|application|candidate) (?:experience|process)|(?:share|give|provide) (?:us )?(?:your )?(?:feedback|thoughts) (?:on|about) (?:your|the|our) (?:recent )?(?:interview(?:ing)?|recruitment|recruiting|hiring|candidate) (?:experience|process)|סקר (?:חווית|שביעות|מועמד)|משוב על (?:תהליך|חווית)|נשמח לשמוע (?:את )?דעתך על (?:תהליך|חווית))/i;
+
+/** Is this the company surveying the candidate about its hiring process? */
+export function isFeedbackSurvey(msg: FetchedMessage): boolean {
+  return FEEDBACK_SURVEY_RE.test(textOf(msg));
+}
+
 const GENERIC_SENDER_RE =
   /^(no.?reply|do.?not.?reply|careers?|recruit(?:ing|ment)?|jobs?|talent|hiring|notifications?|hr|hello|info|support|team|mailer|mail|admin|apply|application|greenhouse|lever|workday|comeet|workable)\b/i;
 
@@ -234,8 +245,15 @@ export function classifyHeuristically(msg: FetchedMessage): Analysis | null {
   };
 
   // Rejections are terminal — classify even if some scheduling words appear.
+  // (Checked BEFORE the survey rule: a rejection with a survey link is still news.)
   if (REJECTION_RE.test(text)) {
     return { ...base, category: "Rejection", step: "Rejected", summary: msg.subject };
+  }
+
+  // The company asking the CANDIDATE to rate its hiring process carries no
+  // pipeline news — the user doesn't want it tracked at all.
+  if (isFeedbackSurvey(msg)) {
+    return { ...base, is_relevant: false, category: "Other", step: "Feedback survey", summary: msg.subject };
   }
 
   // Acknowledgement, but only shortcut when there's no real invitation ask

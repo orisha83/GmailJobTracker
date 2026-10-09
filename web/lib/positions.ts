@@ -419,16 +419,22 @@ export function buildPositions(allJobs: Job[], aliasList: Alias[] = []): Positio
     const chronological = [...group].sort((a, b) =>
       (a.received || "").localeCompare(b.received || ""),
     );
+    // A segment made ONLY of rejections (a follow-up reply quoting the
+    // rejection, a re-sent notice) isn't a new application — fold it into the
+    // segment it follows instead of opening another closed card.
+    const segments: Job[][] = [];
     let segment: Job[] = [];
     for (const j of chronological) {
       segment.push(j);
       if (isRejectedEvent(j)) {
-        positions.push(makePosition(companyName, pickSegmentRole(segment), segment, meta));
+        if (segments.length && segment.every(isRejectedEvent)) segments[segments.length - 1].push(...segment);
+        else segments.push(segment);
         segment = [];
       }
     }
-    if (segment.length) {
-      positions.push(makePosition(companyName, pickSegmentRole(segment), segment, meta));
+    if (segment.length) segments.push(segment);
+    for (const seg of segments) {
+      positions.push(makePosition(companyName, pickSegmentRole(seg), seg, meta));
     }
   }
 

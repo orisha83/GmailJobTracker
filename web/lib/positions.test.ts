@@ -377,3 +377,14 @@ describe("sortPositions — status (interviews first)", () => {
     ]);
   });
 });
+
+it("back-to-back rejections stay on one closed card (Houzz reply quoting the rejection)", () => {
+  const ps = buildPositions([
+    job({ messageId: "1", company: "Houzz", companyKey: "houzz", received: "2026-07-01T00:00:00.000Z", category: "Invitation", step: "HR screen" }),
+    job({ messageId: "2", company: "Houzz", companyKey: "houzz", received: "2026-07-10T00:00:00.000Z", category: "Rejection", step: "Rejected" }),
+    job({ messageId: "3", company: "Houzz", companyKey: "houzz", received: "2026-07-11T00:00:00.000Z", category: "Rejection", step: "Rejected" }),
+    job({ messageId: "4", company: "Houzz", companyKey: "houzz", received: "2026-08-01T00:00:00.000Z", category: "Applied", step: "Applied" }),
+  ]);
+  expect(ps).toHaveLength(2); // the closed process + the new application
+  expect(ps.find((p) => p.status === "Rejected")?.rounds).toBe(3);
+});

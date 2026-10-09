@@ -18,7 +18,7 @@ function buildPrompt(input: EmailInput, timezone: string): string {
   return `You are an AI assistant helping a candidate track where each job application stands.
 Analyze one email (it may be in Hebrew or English) and report the candidate's CURRENT step for that position.
 
-Set "is_relevant" to true for ANY job-application-related email, false for unrelated mail (newsletters, marketing, personal).
+Set "is_relevant" to true for ANY job-application-related email, false for unrelated mail (newsletters, marketing, personal) — and false for surveys/requests asking the candidate to rate or give feedback on the company's interview/hiring process ("Let us know how we did", "Candidate Experience Survey"); those carry no pipeline news.
 
 "company": the HIRING company the candidate applied to — take it from the email body/subject/signature (e.g. "the Product Manager position at Blockaid"), NOT the sender's personal name. A recruiter (a person) often sends on behalf of the company; report the company, not the recruiter. Sender hints — name: "${input.senderName ?? ""}", domain: "${input.senderDomain ?? ""}". Translate to English if Hebrew.
 
