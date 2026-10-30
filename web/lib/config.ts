@@ -11,14 +11,24 @@
  * the whole application lifecycle (acknowledgements, invitations, rejections),
  * not just interview invites. The time window is NOT baked in here — the poller
  * appends an `after:` bound for incremental scanning.
+ *
+ * Gmail matches whole words — no stemming — so "position" does NOT match
+ * "positions". Plurals are listed explicitly: a Workiz rejection ("explore our
+ * open positions… future opportunities") matched none of the singulars and was
+ * never fetched at all.
  */
 export const DEFAULT_SEARCH_QUERY =
   "(" +
   // interview / scheduling
-  "interview OR call OR scheduling OR ראיון OR טלפוני OR שיחה OR לתאם OR זימון OR " +
+  "interview OR interviews OR call OR scheduling OR ראיון OR טלפוני OR שיחה OR לתאם OR זימון OR " +
   // application lifecycle (acknowledgements + rejections live here)
-  "applying OR application OR applied OR candidate OR candidacy OR recruiting OR recruiter OR " +
-  'position OR role OR opportunity OR resume OR "thank you for applying" OR ' +
+  "applying OR application OR applications OR applied OR candidate OR candidates OR candidacy OR " +
+  "recruiting OR recruiter OR \"talent acquisition\" OR " +
+  "position OR positions OR role OR roles OR opportunity OR opportunities OR resume OR " +
+  '"thank you for applying" OR ' +
+  // rejection wording that may name no role/application at all
+  'unfortunately OR regret OR "moving forward" OR "move forward" OR "not to continue" OR ' +
+  '"not to proceed" OR לצערנו OR ' +
   // roles / HR
   "HR OR תפקיד OR משרה OR גיוס OR מועמד OR מועמדות OR מועמדותך OR \"קורות חיים\" OR קו\"ח OR דרושים" +
   ")";

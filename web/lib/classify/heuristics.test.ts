@@ -386,6 +386,23 @@ describe("rescan follow-ups", () => {
   });
 });
 
+describe("Workiz rejection (never fetched — query missed its plurals)", () => {
+  it("'decided not to continue the process' after an interview is a rejection", () => {
+    const a = classifyHeuristically(
+      msg({
+        subject: "Thank You for Your Time | Workiz",
+        senderName: "Natalie Mizrahi",
+        senderDomain: "careers.workiz.com",
+        body:
+          "Hi Ori, Thank you so much for taking the time to speak with us at Workiz. Unfortunately, " +
+          "we’ve decided not to continue the process at this time. Check out our career website to " +
+          "explore our open positions.",
+      }),
+    );
+    expect(a?.category).toBe("Rejection");
+  });
+});
+
 describe("feedback surveys are not tracked", () => {
   it.each([
     ["Your interview at Nebius: Let us know how we did!", "As you recently interviewed for a position with us, we'd really appreciate your feedback."],
